@@ -1,19 +1,15 @@
-name: Auto-Podcast-Daily
+name: Auto-Vocab-Daily
 
 on:
   schedule:
     - cron: '0 15 * * *'   # JST00:00
-    #- cron: '0 18 * * *'   # JST03:00
     - cron: '0 21 * * *'   # JST06:00
-    #- cron: '0 0  * * *'   # JST09:00
     - cron: '0 3  * * *'   # JST12:00
-   # - cron: '0 6  * * *'   # JST15:00
     - cron: '0 9  * * *'   # JST18:00
-    #- cron: '0 12 * * *'   # JST21:00
   workflow_dispatch:
 
 concurrency:
-  group: auto-podcast-${{ github.ref }}
+  group: auto-vocab-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -54,36 +50,13 @@ jobs:
           echo "$YT_ACC5" | base64 -d > tokens/token_acc5.pkl
           echo "$YT_ACC6" | base64 -d > tokens/token_acc6.pkl
 
-      - name: 🎲 Pick content mode (random)
-        id: mode
-        shell: bash
-        run: |
-          MODES=(vocab)
-          MODE=${MODES[$RANDOM % ${#MODES[@]}]}
-          echo "mode=$MODE" | tee -a "$GITHUB_OUTPUT"
-
-      - name: 📝 Pick today’s topic
-        id: topic
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          MODE: ${{ steps.mode.outputs.mode }}
-        shell: bash
-        run: |
-          topic=$(python - <<'PY'
-          from topic_picker import pick_by_content_type
-          import os
-          print(pick_by_content_type(os.environ.get("MODE","wisdom"), "ja"))
-          PY
-          )
-          echo "topic=$topic" | tee -a "$GITHUB_OUTPUT"
-
-      - name: 🎬 Build & Upload All Combos
+      - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
-          CONTENT_MODE:        ${{ steps.mode.outputs.mode }}
+          VOCAB_WORDS:         6               # 生成する単語数（例：6単語）
+          VOCAB_SILENT_SECOND: 1               # 2行目を無音に（単語→訳→例文構成）
         run: |
-          python main.py "AUTO" \
-            --turns 8 \
+          python main.py AUTO \
             --privacy public \
             --chunk 40

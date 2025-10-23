@@ -1,16 +1,18 @@
 #!/usr/bin/env python
 """
-main.py – VOCAB専用版
-単語テーマ（AUTO→topic_picker）→ 単語リスト生成 → [単語→訳（字幕）→例文] を繰り返し
-→ TTS → lines.json & full.mp3 → chunk_builder.py で動画 → （任意）YouTubeアップロード
+main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]対応）
+
+パイプライン:
+  単語テーマ（AUTO→topic_picker）→ 単語リスト生成
+  → [単語→単語→例文] を繰り返し
+  → TTS（日本語の「漢字だけ単語」はTTS用にふりがな付与／字幕は原文のまま）
+  → （無音ギャップを挟んで）単純結合して full.mp3
+  → lines.json → chunk_builder.py → （任意）YouTubeアップロード
 
 環境変数:
-- VOCAB_WORDS  : 生成する語数 (既定: 6)
-- DEBUG_SCRIPT : "1" で台本・字幕・尺のデバッグファイルを TEMP に出力
-
-音切れ対策:
-- 行間無音を 300ms に拡大
-- 各行オーディオの最短尺を 900ms にパディング（超短発声での「ッ」音防止）
+- VOCAB_WORDS   : 生成する語数 (既定: 6)
+- DEBUG_SCRIPT  : "1" で台本・字幕・尺のデバッグファイルを TEMP に出力
+- GAP_MS        : 発話間に挿入する無音（ミリ秒, 既定: 120）
 """
 
 import argparse, logging, re, json, subprocess, os
@@ -33,9 +35,9 @@ from topic_picker   import pick_by_content_type
 
 # ───────────────────────────────────────────────
 GPT = OpenAI()
-MAX_SHORTS_SEC = 59.0
-CONTENT_MODE   = "vocab"  # 固定: vocab 専用
-DEBUG_SCRIPT   = os.getenv("DEBUG_SCRIPT", "0") == "1"
+CONTENT_MODE = "vocab"      # 固定
+DEBUG_SCRIPT = os.getenv("DEBUG_SCRIPT", "0") == "1"
+GAP_MS       = int(os.getenv("GAP_MS", "120"))  # 無音ギャップ
 
 # ───────────────────────────────────────────────
 # combos.yaml 読み込み
@@ -59,7 +61,6 @@ LANG_NAME = {
     "ja": "Japanese","ko": "Korean", "es": "Spanish",
 }
 
-# 日本語タイトル用のラベル（音声言語→◯◯語会話）
 JP_CONV_LABEL = {
     "en": "英会話", "ja": "日本語会話", "es": "スペイン語会話",
     "pt": "ポルトガル語会話", "ko": "韓国語会話", "id": "インドネシア語会話",
@@ -71,7 +72,7 @@ JP_CONV_LABEL = {
 def resolve_topic(arg_topic: str) -> str:
     if arg_topic and arg_topic.strip().lower() == "auto":
         first_audio_lang = COMBOS[0]["audio"]
-        topic = pick_by_content_type("vocab", first_audio_lang)  # ← vocabテーマ
+        topic = pick_by_content_type("vocab", first_audio_lang)  # vocabテーマ
         logging.info(f"[AUTO VOCAB THEME] {topic}")
         return topic
     return arg_topic
@@ -98,9 +99,7 @@ def _gen_example_sentence(word: str, lang_code: str) -> str:
         return f"Let's practice the word {word} in a short sentence."
 
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
-    """
-    テーマから n 語の単語リストを生成。失敗時はフォールバック。
-    """
+    """テーマから n 語の単語リストを生成。失敗時はフォールバック。"""
     theme_for_prompt = translate(theme, lang_code) if lang_code != "en" else theme
     prompt = (
         f"List {n} essential single or hyphenated words for {theme_for_prompt} context "
@@ -126,10 +125,35 @@ def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
     return fallback[:n]
 
 # ───────────────────────────────────────────────
+# ふりがな（日本語TTS用・字幕には出さない）
+# ───────────────────────────────────────────────
+_KANJI_ONLY = re.compile(r"^[一-龥々]+$")
+
+def _kana_reading(word: str) -> str:
+    """漢字のみの単語に対してひらがな読みを返す（短く・記号なし）"""
+    try:
+        rsp = GPT.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role":"user",
+                "content":(
+                    "次の日本語単語の読みをひらがなだけで1語返してください。"
+                    "記号・括弧・説明は不要。\n"
+                    f"単語: {word}"
+                )
+            }],
+            temperature=0.0,
+        )
+        yomi = (rsp.choices[0].message.content or "").strip()
+        yomi = re.sub(r"[^ぁ-ゖゝゞー]+", "", yomi)  # ひらがなのみ
+        return yomi[:20]
+    except Exception:
+        return ""
+
+# ───────────────────────────────────────────────
 # メタ生成
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
-    """テーマに合わせた短い学習向けタイトル"""
     if title_lang == "ja":
         base = f"{theme} で使える一言"
         label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
@@ -158,7 +182,6 @@ def make_tags(theme, audio_lang, subs, title_lang):
     for code in subs:
         if code in LANG_NAME:
             tags.append(f"{LANG_NAME[code]} subtitles")
-    # 重複除去・上限
     seen, out = set(), []
     for t in tags:
         if t not in seen:
@@ -166,54 +189,22 @@ def make_tags(theme, audio_lang, subs, title_lang):
     return out[:15]
 
 # ───────────────────────────────────────────────
-# 音声結合・トリム
-#   - gap_ms: 行間に入れる無音（既定 300ms）
-#   - min_ms: 各行の最短尺（既定 900ms 未満の音声は後ろに無音を付与）
+# 単純結合（トリミング無し）：各行の長さ + ギャップを dur に採用
 # ───────────────────────────────────────────────
-def _concat_trim_to(mp_paths, max_sec, gap_ms=300, min_ms=900):
-    max_ms = int(max_sec * 1000)
+def _concat_with_gaps(mp_paths, gap_ms=120):
     combined = AudioSegment.silent(duration=0)
-    new_durs, elapsed = [], 0
-
+    durs = []
     for idx, p in enumerate(mp_paths):
         seg = AudioSegment.from_file(p)
-
-        # ★最短尺パディング（単語のプツ切れ防止）
-        if len(seg) < min_ms:
-            seg = seg + AudioSegment.silent(duration=min_ms - len(seg))
-
         seg_ms = len(seg)
-        extra = gap_ms if idx < len(mp_paths) - 1 else 0  # 最後以外は無音を付与
-        need = seg_ms + extra
-
-        remain = max_ms - elapsed
-        if remain <= 0:
-            break
-
-        if need <= remain:
-            combined += seg
-            elapsed += seg_ms
-            if extra:
-                combined += AudioSegment.silent(duration=extra)
-                elapsed += extra
-            new_durs.append((seg_ms + extra) / 1000.0)
-        else:
-            if remain <= seg_ms:
-                combined += seg[:remain]
-                new_durs.append(remain / 1000.0)
-                elapsed += remain
-            else:
-                used_gap = remain - seg_ms
-                combined += seg
-                if used_gap > 0:
-                    combined += AudioSegment.silent(duration=used_gap)
-                new_durs.append((seg_ms + used_gap) / 1000.0)
-                elapsed += seg_ms + used_gap
-            break
-
+        combined += seg
+        extra = gap_ms if idx < len(mp_paths) - 1 else 0
+        if extra:
+            combined += AudioSegment.silent(duration=extra)
+        durs.append((seg_ms + extra) / 1000.0)
     (TEMP / "full_raw.mp3").unlink(missing_ok=True)
     combined.export(TEMP / "full_raw.mp3", format="mp3")
-    return new_durs
+    return durs
 
 # ───────────────────────────────────────────────
 # 1コンボ処理（vocab 専用）
@@ -243,18 +234,28 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
     mp_parts, sub_rows = [], [[] for _ in subs]
 
-    # （A）script_raw/subs_table 用にプレーン文も保持
+    # 生成テキスト（字幕用の素）は保存しておく
     plain_lines = [line for (_, line) in valid_dialogue]
 
     for i, (spk, line) in enumerate(valid_dialogue, 1):
+        # ── TTS用テキスト最終化（日本語・漢字のみの“単語”に読みを付与）──
+        tts_line = line
+        if audio_lang == "ja" and _KANJI_ONLY.fullmatch(line):
+            yomi = _kana_reading(line)
+            if yomi:
+                tts_line = f"{line}"  # 音声は読みを強制、字幕は原文のまま
+
+        # 音声合成
         mp = TEMP / f"{i:02d}.mp3"
-        speak(audio_lang, spk, line, mp, style="neutral")
+        speak(audio_lang, spk, tts_line, mp, style="neutral")
         mp_parts.append(mp)
+
+        # 字幕（音声言語=原文、他言語=翻訳）※ふりがなは入れない
         for r, lang in enumerate(subs):
             sub_rows[r].append(line if lang == audio_lang else translate(line, lang))
 
-    # （B）音声を結合 → new_durs（各行尺）
-    new_durs = _concat_trim_to(mp_parts, MAX_SHORTS_SEC, gap_ms=300, min_ms=900)
+    # 単純結合（無音ギャップ挿入、トリム無し）
+    new_durs = _concat_with_gaps(mp_parts, gap_ms=GAP_MS)
     enhance(TEMP/"full_raw.mp3", TEMP/"full.mp3")
 
     # 背景：最初の単語を使う
@@ -262,59 +263,39 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     first_word = valid_dialogue[0][1] if valid_dialogue else theme
     fetch_bg(first_word, bg_png)
 
-    # （C）trim 適用後に使う行数
-    used = len(new_durs)
-    used_dialogue = valid_dialogue[:used]
-    used_sub_rows = [rows[:used] for rows in sub_rows]
+    # lines.json（[spk, sub1, sub2, ..., dur]）
+    lines_data = []
+    for i, ((spk, txt), dur) in enumerate(zip(valid_dialogue, new_durs)):
+        row = [spk]
+        for r in range(len(subs)):
+            row.append(sub_rows[r][i])
+        row.append(dur)
+        lines_data.append(row)
+    (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # ── デバッグ出力（DEBUG_SCRIPT=1 のときだけ） ─────────────
+    # デバッグ出力
     if DEBUG_SCRIPT:
         try:
-            # 1) script_raw.txt（生成テキストの素）
-            (TEMP / "script_raw.txt").write_text(
-                "\n".join(plain_lines), encoding="utf-8"
-            )
-            # 2) subs_table.tsv（全行×全字幕言語の表）
+            (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
             with open(TEMP / "subs_table.tsv", "w", encoding="utf-8") as f:
                 header = ["idx", "text"] + [f"sub:{code}" for code in subs]
                 f.write("\t".join(header) + "\n")
                 for idx in range(len(valid_dialogue)):
-                    row = [str(idx+1), valid_dialogue[idx][1]]
-                    for r in range(len(subs)):
-                        row.append(sub_rows[r][idx])
+                    row = [str(idx+1), valid_dialogue[idx][1]] + [sub_rows[r][idx] for r in range(len(subs))]
                     f.write("\t".join(row) + "\n")
-            # 3) durations.txt（各行の秒数と合計）
             with open(TEMP / "durations.txt", "w", encoding="utf-8") as f:
                 total = 0.0
                 for i, d in enumerate(new_durs, 1):
                     total += d
                     f.write(f"{i:02d}\t{d:.3f}s\n")
                 f.write(f"TOTAL\t{total:.3f}s\n")
-            # 4) script_joined.tsv（trim後に実際に使われたテキスト＋字幕＋尺）
-            with open(TEMP / "script_joined.tsv", "w", encoding="utf-8") as f:
-                header = ["idx", "text", "dur(s)"] + [f"sub:{code}" for code in subs]
-                f.write("\t".join(header) + "\n")
-                for i, ((_, txt), dur) in enumerate(zip(used_dialogue, new_durs), 1):
-                    row = [str(i), txt, f"{dur:.3f}"] + [used_sub_rows[r][i-1] for r in range(len(subs))]
-                    f.write("\t".join(row) + "\n")
         except Exception as e:
             logging.warning(f"[DEBUG_SCRIPT] write failed: {e}")
-    # ─────────────────────────────────────────────
-
-    # lines.json 生成（[spk, sub1, sub2, ..., dur]）
-    lines_data = []
-    for i, ((spk, txt), dur) in enumerate(zip(used_dialogue, new_durs)):
-        row = [spk]
-        for r in range(len(subs)):
-            row.append(used_sub_rows[r][i])
-        row.append(dur)
-        lines_data.append(row)
-    (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if args.lines_only:
         return
 
-    # サムネ（タイトル言語はサブ2列目があればそれを優先）
+    # サムネ
     thumb = TEMP / "thumbnail.jpg"
     thumb_lang = subs[1] if len(subs) > 1 else audio_lang
     make_thumbnail(theme, thumb_lang, thumb)
@@ -354,7 +335,6 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
         title_lang  = combo.get("title_lang", subs[1] if len(subs)>1 else audio_lang)
         logging.info(f"=== Combo: {audio_lang}, subs={subs}, account={account}, title_lang={title_lang}, mode={CONTENT_MODE} ===")
 
-        # AUTO の場合: 言語ごとに vocab テーマを日替わりピック
         picked_topic = topic
         if topic.strip().lower() == "auto":
             picked_topic = pick_by_content_type("vocab", audio_lang)

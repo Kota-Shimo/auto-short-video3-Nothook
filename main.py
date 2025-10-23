@@ -3,6 +3,7 @@
 main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋先頭無音＋最短1秒）
 - 例文は常に「1文だけ」。バリデーション失敗時は最大3回まで再生成し、最後はフェールセーフ。
 - 翻訳（字幕）は1行化し、複文は先頭1文のみ採用。URL/絵文字/余分な空白を除去。
+- 追加: TARGET_ACCOUNT/--account で combos をアカウント単位に絞り込み可能。
 """
 
 import argparse, logging, re, json, subprocess, os
@@ -458,6 +459,10 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
         account     = combo.get("account","default")
         title_lang  = _infer_title_lang(audio_lang, subs, combo)
 
+        # Account 絞り込み（__main__ で COMBOS をフィルタ済みだが二重保険）
+        if TARGET_ONLY and account != TARGET_ONLY:
+            continue
+
         logging.info(f"=== Combo: {audio_lang}, subs={subs}, account={account}, title_lang={title_lang}, mode={CONTENT_MODE} ===")
 
         picked_topic = topic
@@ -477,7 +482,23 @@ if __name__ == "__main__":
     ap.add_argument("--lines-only", action="store_true")
     ap.add_argument("--no-upload", action="store_true")
     ap.add_argument("--chunk", type=int, default=9999, help="Shortsは分割せず1本推奨")
+    # ★ 追加: CLIからアカウントを指定できる
+    ap.add_argument("--account", type=str, default="", help="この account のみ実行（combos.yaml の account 値に一致）")
     args = ap.parse_args()
+
+    # ── Account フィルタの決定（CLI > 環境変数） ──
+    target_cli = (args.account or "").strip()
+    target_env = os.getenv("TARGET_ACCOUNT", "").strip()
+    TARGET_ONLY = target_cli or target_env
+
+    if TARGET_ONLY:
+        selected = [c for c in COMBOS if c.get("account", "default") == TARGET_ONLY]
+        if not selected:
+            logging.error(f"[ABORT] No combos matched account='{TARGET_ONLY}'. Check combos.yaml.")
+            raise SystemExit(2)
+        # in-place 置換（他からも参照されるため）
+        COMBOS[:] = selected
+        logging.info(f"[ACCOUNT FILTER] Running only for account='{TARGET_ONLY}' ({len(COMBOS)} combo(s)).")
 
     topic = resolve_topic(args.topic)
     run_all(topic, args.turns, args.privacy, not args.no_upload, args.chunk)

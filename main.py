@@ -1,20 +1,6 @@
 #!/usr/bin/env python
 """
 main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋先頭無音＋最短1秒）
-
-パイプライン:
-  単語テーマ（AUTO→topic_picker）→ 単語リスト生成
-  → [単語→単語→例文] を繰り返し
-  → TTS（日本語の「漢字だけ単語」はTTS用にひらがな読みを適用／字幕は原文のまま）
-  → 単純結合（各行 前無音＋最短尺＋行間ギャップ）で full_raw.wav → enhance → full.wav → full.mp3
-  → lines.json → chunk_builder.py → （任意）YouTubeアップロード
-
-環境変数:
-- VOCAB_WORDS   : 生成する語数 (既定: 6)
-- DEBUG_SCRIPT  : "1" で台本・字幕・尺のデバッグファイルを TEMP に出力
-- GAP_MS        : 行間に挿入する無音（ms, 既定: 120）
-- PRE_SIL_MS    : 各行の先頭に入れる無音（ms, 既定: 120）
-- MIN_UTTER_MS  : 各行の最短尺（ms, 既定: 1000）
 """
 
 import argparse, logging, re, json, subprocess, os
@@ -43,8 +29,16 @@ GAP_MS       = int(os.getenv("GAP_MS", "120"))     # 行間ギャップ
 PRE_SIL_MS   = int(os.getenv("PRE_SIL_MS", "120")) # 行頭サイレント
 MIN_UTTER_MS = int(os.getenv("MIN_UTTER_MS", "1000"))  # 各行の最短尺
 
-# ───────────────────────────────────────────────
-# combos.yaml 読み込み
+LANG_NAME = {
+    "en": "English", "pt": "Portuguese", "id": "Indonesian",
+    "ja": "Japanese","ko": "Korean", "es": "Spanish",
+}
+
+JP_CONV_LABEL = {
+    "en": "英会話", "ja": "日本語会話", "es": "スペイン語会話",
+    "pt": "ポルトガル語会話", "ko": "韓国語会話", "id": "インドネシア語会話",
+}
+
 # ───────────────────────────────────────────────
 with open(BASE / "combos.yaml", encoding="utf-8") as f:
     COMBOS = yaml.safe_load(f)["combos"]
@@ -55,20 +49,9 @@ def reset_temp():
     TEMP.mkdir(exist_ok=True)
 
 def sanitize_title(raw: str) -> str:
-    # 正規表現バグ修正: "\\s" → "\s"
     title = re.sub(r"^\s*(?:\d+\s*[.)]|[-•・])\s*", "", raw)
     title = re.sub(r"[\s\u3000]+", " ", title).strip()
     return title[:97] + "…" if len(title) > 100 else title or "Auto Video"
-
-LANG_NAME = {
-    "en": "English", "pt": "Portuguese", "id": "Indonesian",
-    "ja": "Japanese","ko": "Korean", "es": "Spanish",
-}
-
-JP_CONV_LABEL = {
-    "en": "英会話", "ja": "日本語会話", "es": "スペイン語会話",
-    "pt": "ポルトガル語会話", "ko": "韓国語会話", "id": "インドネシア語会話",
-}
 
 # ───────────────────────────────────────────────
 # タイトル言語の推定（堅牢化）
@@ -85,21 +68,75 @@ def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
     return audio_lang
 
 # ───────────────────────────────────────────────
-# トピック取得: "AUTO"→ vocab テーマを日替わりで選ぶ
+# トピック取得
 # ───────────────────────────────────────────────
 def resolve_topic(arg_topic: str) -> str:
     if arg_topic and arg_topic.strip().lower() == "auto":
         first_audio_lang = COMBOS[0]["audio"]
-        topic = pick_by_content_type("vocab", first_audio_lang)  # vocabテーマ
+        topic = pick_by_content_type("vocab", first_audio_lang)
         logging.info(f"[AUTO VOCAB THEME] {topic}")
         return topic
     return arg_topic
 
 # ───────────────────────────────────────────────
+# 例文クリーンアップ & フォールバック
+# ───────────────────────────────────────────────
+_URL_RE   = re.compile(r"https?://\S+")
+_NUM_LEAD = re.compile(r"^\s*\d+[\).:\-]\s*")
+_QUOTES   = re.compile(r'^[\"“”\']+|[\"“”\']+$')
+_MD       = re.compile(r"[*_`]+")
+_PARENS   = re.compile(r"\s*[$begin:math:text$\\（][^)\\）]{1,40}[$end:math:text$\）]\s*")  # 軽めに除去（TTS向け＆例文の崩れ対策）
+
+def _ensure_period(txt: str, lang_code: str) -> str:
+    if re.search(r"[。.!?！？]$", txt):
+        return txt
+    return txt + ("。" if lang_code == "ja" else ".")
+
+def _clean_example(text: str, lang_code: str) -> str:
+    if not text:
+        return ""
+    t = text.strip()
+    t = _URL_RE.sub("", t)
+    t = _NUM_LEAD.sub("", t)
+    t = _MD.sub("", t)
+    t = _QUOTES.sub("", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    # 例文内の括弧書きは壊れの温床なので落とす（字幕側もクリーンに）
+    t = _PARENS.sub(" ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # 長すぎるのはカット（~14語相当）
+    words = t.split()
+    if len(words) > 14:
+        t = " ".join(words[:14])
+
+    # 終止記号付与
+    t = _ensure_period(t, lang_code)
+
+    # ほぼ空 or 2語未満なら壊れ扱い
+    if len(t.replace("。", ".").split()) < 2:
+        return ""
+    return t
+
+def _fallback_sentence(word: str, lang_code: str) -> str:
+    # 最低限の自然文（短い・安全）
+    if lang_code == "ja":
+        return f"{word} を使ってみよう。"
+    elif lang_code == "es":
+        return f"Practiquemos {word}."
+    elif lang_code == "pt":
+        return f"Vamos praticar {word}."
+    elif lang_code == "ko":
+        return f"{word} 연습해 봅시다."
+    elif lang_code == "id":
+        return f"Ayo berlatih {word}."
+    else:  # en 他
+        return f"Let's practice {word}."
+
+# ───────────────────────────────────────────────
 # 語彙ユーティリティ
 # ───────────────────────────────────────────────
 def _gen_example_sentence(word: str, lang_code: str) -> str:
-    """その単語を使った短い例文を1つだけ生成（失敗時はフォールバック）"""
     prompt = (
         f"Write one short, natural example sentence (<=12 words) in "
         f"{LANG_NAME.get(lang_code,'English')} using the word: {word}. "
@@ -111,32 +148,29 @@ def _gen_example_sentence(word: str, lang_code: str) -> str:
             messages=[{"role":"user","content":prompt}],
             temperature=0.6,
         )
-        sent = (rsp.choices[0].message.content or "").strip()
-        return re.sub(r'^[\"“”\'\s]+|[\"“”\'\s]+$', '', sent)
+        raw = (rsp.choices[0].message.content or "").strip()
     except Exception:
-        return f"Let's practice the word {word} in a short sentence."
+        raw = ""
+
+    cleaned = _clean_example(raw, lang_code)
+    if cleaned:
+        return cleaned
+    # フォールバック
+    return _fallback_sentence(word, lang_code)
 
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
-    """テーマから n 語の単語リストを生成。失敗時はフォールバック。"""
     theme_for_prompt = translate(theme, lang_code) if lang_code != "en" else theme
     prompt = (
         f"List {n} essential single or hyphenated words for {theme_for_prompt} context "
         f"in {LANG_NAME.get(lang_code,'English')}. Return ONLY one word per line, no numbering."
     )
     try:
-        rsp = GPT.chat_completions.create(  # 保険（旧SDKの互換呼び出し対策）
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.5,
-        )
-    except Exception:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=0.5,
         )
-    try:
-        content = rsp.choices[0].message.content or ""
+        content = (rsp.choices[0].message.content or "")
     except Exception:
         content = ""
     words = [w.strip() for w in content.splitlines() if w and w.strip()]
@@ -156,7 +190,6 @@ def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
 _KANJI_ONLY = re.compile(r"^[一-龥々]+$")
 
 def _kana_reading(word: str) -> str:
-    """漢字のみの単語に対してひらがな読みを返す（記号なし・短く）"""
     try:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
@@ -171,7 +204,7 @@ def _kana_reading(word: str) -> str:
             temperature=0.0,
         )
         yomi = (rsp.choices[0].message.content or "").strip()
-        yomi = re.sub(r"[^ぁ-ゖゝゞー]+", "", yomi)  # ひらがなのみ
+        yomi = re.sub(r"[^ぁ-ゖゝゞー]+", "", yomi)
         return yomi[:20]
     except Exception:
         return ""
@@ -180,6 +213,9 @@ def _kana_reading(word: str) -> str:
 # メタ生成（タイトルと説明は必ず「タイトル言語」に揃える）
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
+    # 未知コードは英語へ
+    if title_lang not in LANG_NAME:
+        title_lang = "en"
     try:
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
@@ -198,6 +234,8 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
         return sanitize_title(t)[:55]
 
 def make_desc(theme, title_lang: str):
+    if title_lang not in LANG_NAME:
+        title_lang = "en"
     try:
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
@@ -229,17 +267,19 @@ def make_tags(theme, audio_lang, subs, title_lang):
 
 # ───────────────────────────────────────────────
 # 単純結合（WAV中間・行頭無音・最短尺・行間ギャップ）
-#  ※トリミングはしない。各行の長さ＋ギャップをそのまま dur に採用
 # ───────────────────────────────────────────────
 def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
     combined = AudioSegment.silent(duration=0)
     durs = []
     for idx, p in enumerate(audio_paths):
         seg = AudioSegment.from_file(p)
-        seg = AudioSegment.silent(duration=pre_ms) + seg  # 先頭に無音
+        # 先頭無音
+        seg = AudioSegment.silent(duration=pre_ms) + seg
+        # 最短尺
         if len(seg) < min_ms:
             seg += AudioSegment.silent(duration=min_ms - len(seg))
         seg_ms = len(seg)
+        # 行間ギャップ（最後以外）
         extra = gap_ms if idx < len(audio_paths) - 1 else 0
         combined += seg
         if extra:
@@ -272,7 +312,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         ex = _gen_example_sentence(w, audio_lang)
         dialogue.extend([("N", w), ("N", w), ("N", ex)])
 
-    # 音声＆字幕の準備
+    # 音声＆字幕
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
     audio_parts, sub_rows = [], [[] for _ in subs]
 
@@ -280,21 +320,25 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     tts_lines   = []
 
     for i, (spk, line) in enumerate(valid_dialogue, 1):
-        # 日本語の漢字-only単語は読みへ
+        # ── TTS用テキスト ──
         tts_line = line
-        if audio_lang == "ja" and _KANJI_ONLY.fullmatch(line):
-            yomi = _kana_reading(line)
-            if yomi:
-                tts_line = yomi
-        # 読み切り安定（ja）
-        if audio_lang in ("ja",) and not re.search(r"[。.!?！？]$", tts_line):
-            tts_line += "。"
+        if audio_lang == "ja":
+            # 例文はTTS用に括弧書きを除去（読み上げノイズ防止）
+            tts_line = _PARENS.sub(" ", tts_line).strip()
+            # 漢字のみの「単語」は読みへ
+            if _KANJI_ONLY.fullmatch(line):
+                yomi = _kana_reading(line)
+                if yomi:
+                    tts_line = yomi
+        # 読み切り安定（句点等）
+        tts_line = _ensure_period(tts_line, audio_lang)
 
         out_audio = TEMP / f"{i:02d}.wav"
         speak(audio_lang, spk, tts_line, out_audio, style="neutral")
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
+        # 字幕（音声言語=原文、他言語=翻訳）※ふりがなは入れない
         for r, lang in enumerate(subs):
             sub_rows[r].append(line if lang == audio_lang else translate(line, lang))
 

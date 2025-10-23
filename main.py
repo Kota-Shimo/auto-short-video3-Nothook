@@ -5,6 +5,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 翻訳（字幕）は1行化し、複文は先頭1文のみ採用。URL/絵文字/余分な空白を除去。
 - 追加: TARGET_ACCOUNT/--account で combos をアカウント単位に絞り込み可能。
 - 追加: topic_picker の文脈ヒント（context）を例文生成に渡して日本語崩れを抑制。
+- 追加: ラングエージルール（厳密モノリンガル・記号/注釈禁止）を例文生成に統合。
 """
 
 import argparse, logging, re, json, subprocess, os
@@ -120,6 +121,25 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
     return t
 
 # ───────────────────────────────────────────────
+# ラングエージルール（厳密モノリンガル & 記号/注釈禁止）
+# ───────────────────────────────────────────────
+def _lang_rules(lang_code: str) -> str:
+    if lang_code == "ja":
+        return (
+            "Write entirely in Japanese. "
+            "Do not include Latin letters or other languages. "
+            "Avoid ASCII symbols such as '/', '-', '→', '()', '[]', '<>', and '|'. "
+            "No translation glosses, brackets, or country/language mentions."
+        )
+    lang_name = LANG_NAME.get(lang_code, "English")
+    return (
+        f"Write entirely in {lang_name}. "
+        "Do not code-switch or include other writing systems. "
+        "Avoid ASCII symbols like '/', '-', '→', '()', '[]', '<>', and '|'. "
+        "No translation glosses, brackets, or country/language mentions."
+    )
+
+# ───────────────────────────────────────────────
 # 日本語向けヒューリスティック（fallback 用）
 # ───────────────────────────────────────────────
 def _guess_ja_pos(word: str) -> str:
@@ -168,6 +188,8 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
     lang_name = LANG_NAME.get(lang_code, "English")
     ctx = (context_hint or "").strip()
 
+    rules = _lang_rules(lang_code)
+
     system = {
         "role": "system",
         "content": (
@@ -178,6 +200,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
 
     if lang_code == "ja":
         user = (
+            f"{rules} "
             f"単語「{word}」を必ず含めて、日本語で自然な一文をちょうど1つだけ書いてください。"
             "日常の簡単な状況を想定し、助詞の使い方を自然にしてください。"
             "かっこ書きや翻訳注釈は不要です。"
@@ -186,6 +209,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
             user += f" シーンの文脈: {ctx}"
     else:
         user = (
+            f"{rules} "
             f"Write exactly ONE short, natural sentence in {lang_name} that uses the word: {word}. "
             "Return ONLY the sentence."
         )
@@ -517,14 +541,13 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             # テーマと文脈ヒントを同時取得（topic_picker.py の拡張版に対応）
             try:
                 theme_ctx = pick_by_content_type("vocab", audio_lang, return_context=True)
-                # 旧版の topic_picker を使っている場合は str が返るので後方互換
                 if isinstance(theme_ctx, tuple) and len(theme_ctx) == 2:
                     picked_topic, context_hint = theme_ctx
                 else:
                     picked_topic = str(theme_ctx)
                     context_hint = ""
             except TypeError:
-                # 関数シグネチャが古い環境（return_context 未対応）の場合
+                # 旧シグネチャ（return_context 未対応）
                 picked_topic = pick_by_content_type("vocab", audio_lang)
                 context_hint = ""
             logging.info(f"[{audio_lang}] picked vocab theme: {picked_topic} | ctx: {context_hint or '-'}")

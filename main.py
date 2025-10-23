@@ -71,6 +71,20 @@ JP_CONV_LABEL = {
 }
 
 # ───────────────────────────────────────────────
+# タイトル言語の推定（堅牢化）
+# 優先: combo.title_lang > 第2字幕 > 音声と異なる字幕 > 音声言語
+# ───────────────────────────────────────────────
+def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
+    if "title_lang" in combo and combo["title_lang"]:
+        return combo["title_lang"]
+    if len(subs) >= 2:
+        return subs[1]
+    for s in subs:
+        if s != audio_lang:
+            return s
+    return audio_lang
+
+# ───────────────────────────────────────────────
 # トピック取得: "AUTO"→ vocab テーマを日替わりで選ぶ
 # ───────────────────────────────────────────────
 def resolve_topic(arg_topic: str) -> str:
@@ -155,26 +169,42 @@ def _kana_reading(word: str) -> str:
         return ""
 
 # ───────────────────────────────────────────────
-# メタ生成
+# メタ生成（タイトルと説明は必ず「タイトル言語」に揃える）
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
+    # テーマをタイトル言語へ翻訳（失敗時は原文）
+    try:
+        theme_local = theme if title_lang == "en" else translate(theme, title_lang)
+    except Exception:
+        theme_local = theme
+
     if title_lang == "ja":
-        base = f"{theme} で使える一言"
+        base = f"{theme_local} で使える一言"
         label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
         t = f"{label} {base}" if label and label not in base else base
         return sanitize_title(t)[:28]
     else:
-        t = f"{theme.capitalize()} vocab in one minute"
+        # 英語以外も素直に「◯◯ vocabulary」系
+        if title_lang == "en":
+            t = f"{theme_local.capitalize()} vocab in one minute"
+        else:
+            t = f"{theme_local} vocabulary"
         return sanitize_title(t)[:55]
 
 def make_desc(theme, title_lang: str):
+    # 説明文もタイトル言語へ
+    try:
+        theme_local = theme if title_lang == "en" else translate(theme, title_lang)
+    except Exception:
+        theme_local = theme
+
     msg = {
-        "ja": f"{theme} に必須の語彙を短時間でチェック。声に出して一緒に練習しよう！ #vocab #learning",
-        "en": f"Quick practice for {theme} vocabulary. Repeat after the audio! #vocab #learning",
-        "pt": f"Pratique rápido o vocabulário de {theme}. Repita em voz alta! #vocab #aprendizado",
-        "es": f"Práctica rápida de vocabulario de {theme}. ¡Repite en voz alta! #vocab #aprendizaje",
-        "ko": f"{theme} 어휘를 빠르게 연습하세요. 소리 내어 따라 말해요! #vocab #learning",
-        "id": f"Latihan cepat kosakata {theme}. Ucapkan keras-keras! #vocab #belajar",
+        "ja": f"{theme_local} に必須の語彙を短時間でチェック。声に出して一緒に練習しよう！ #vocab #learning",
+        "en": f"Quick practice for {theme_local} vocabulary. Repeat after the audio! #vocab #learning",
+        "pt": f"Pratique rápido o vocabulário de {theme_local}. Repita em voz alta! #vocab #aprendizado",
+        "es": f"Práctica rápida de vocabulario de {theme_local}. ¡Repite en voz alta! #vocab #aprendizaje",
+        "ko": f"{theme_local} 어휘를 빠르게 연습하세요. 소리 내어 따라 말해요! #vocab #learning",
+        "id": f"Latihan cepat kosakata {theme_local}. Ucapkan keras-keras! #vocab #belajar",
     }
     return msg.get(title_lang, msg["en"])
 
@@ -194,6 +224,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
 
 # ───────────────────────────────────────────────
 # 単純結合（WAV中間・行頭無音・最短尺・行間ギャップ）
+#  ※トリミングはしない。各行の長さ＋ギャップをそのまま dur に採用
 # ───────────────────────────────────────────────
 def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
     combined = AudioSegment.silent(duration=0)
@@ -239,7 +270,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     # 音声＆字幕の準備
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
-    mp_parts, sub_rows = [], [[] for _ in subs]
+    audio_parts, sub_rows = [], [[] for _ in subs]
 
     # デバッグ用保持
     plain_lines = [line for (_, line) in valid_dialogue]
@@ -252,14 +283,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             yomi = _kana_reading(line)
             if yomi:
                 tts_line = yomi
-        # 句点付与で読み切りを安定
+        # 読み切り安定のため句点を付加（ja）
         if audio_lang in ("ja",) and not re.search(r"[。.!?！？]$", tts_line):
             tts_line += "。"
 
-        # 音声合成（拡張子はWAVを推奨：中間をWAVで統一）
+        # 音声合成（WAVに出力）
         out_audio = TEMP / f"{i:02d}.wav"
         speak(audio_lang, spk, tts_line, out_audio, style="neutral")
-        mp_parts.append(out_audio)
+        audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
         # 字幕（音声言語=原文、他言語=翻訳）※ふりがなは入れない
@@ -267,7 +298,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             sub_rows[r].append(line if lang == audio_lang else translate(line, lang))
 
     # 単純結合（WAV）→ enhance（WAV）→ 最終MP3
-    new_durs = _concat_with_gaps(mp_parts, gap_ms=GAP_MS, pre_ms=PRE_SIL_MS, min_ms=MIN_UTTER_MS)
+    new_durs = _concat_with_gaps(audio_parts, gap_ms=GAP_MS, pre_ms=PRE_SIL_MS, min_ms=MIN_UTTER_MS)
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
@@ -309,7 +340,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if args.lines_only:
         return
 
-    # サムネ（タイトル言語はサブ2列目があればそれを優先）
+    # サムネ
     thumb = TEMP / "thumbnail.jpg"
     thumb_lang = subs[1] if len(subs) > 1 else audio_lang
     make_thumbnail(theme, thumb_lang, thumb)
@@ -332,7 +363,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if not do_upload:
         return
 
-    # メタ生成＆アップロード
+    # メタ生成＆アップロード（タイトル言語は堅牢推定済みを使用）
     title = make_title(theme, title_lang, audio_lang_for_label=audio_lang)
     desc  = make_desc(theme, title_lang)
     tags  = make_tags(theme, audio_lang, subs, title_lang)
@@ -346,7 +377,9 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
         audio_lang  = combo["audio"]
         subs        = combo["subs"]
         account     = combo.get("account","default")
-        title_lang  = combo.get("title_lang", subs[1] if len(subs)>1 else audio_lang)
+        # ★ 修正: タイトル言語を堅牢に推定
+        title_lang  = _infer_title_lang(audio_lang, subs, combo)
+
         logging.info(f"=== Combo: {audio_lang}, subs={subs}, account={account}, title_lang={title_lang}, mode={CONTENT_MODE} ===")
 
         picked_topic = topic

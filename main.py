@@ -466,27 +466,28 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         lines_data.append(row)
     (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # デバッグ出力（列見やすいよう header を明示）
-    if DEBUG_SCRIPT:
-        try:
-            (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
-            (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
-            with open(TEMP / "subs_table.tsv", "w", encoding="utf-8") as f:
-                header = ["idx", "text"] + [f"sub:{code}" for code in subs]
-                f.write("\t".join(header) + "\n")
-                for idx in range(len(valid_dialogue)):
-                    row = [str(idx+1), _clean_sub_line(valid_dialogue[idx][1], audio_lang)]
-                    for r in range(len(subs)):
-                        row.append(sub_rows[r][idx])
-                    f.write("\t".join(row) + "\n")
-            with open(TEMP / "durations.txt", "w", encoding="utf-8") as f:
-                total = 0.0
-                for i, d in enumerate(new_durs, 1):
-                    total += d
-                    f.write(f"{i:02d}\t{d:.3f}s\n")
-                f.write(f"TOTAL\t{total:.3f}s\n")
-        except Exception as e:
-            logging.warning(f"[DEBUG_SCRIPT] write failed: {e}")
+    # ─────────────────────────
+    # デバッグ出力（常に出力する）
+    # ─────────────────────────
+    try:
+        (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
+        (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
+        with open(TEMP / "subs_table.tsv", "w", encoding="utf-8") as f:
+            header = ["idx", "text"] + [f"sub:{code}" for code in subs]
+            f.write("\t".join(header) + "\n")
+            for idx in range(len(valid_dialogue)):
+                row = [str(idx+1), _clean_sub_line(valid_dialogue[idx][1], audio_lang)]
+                for r in range(len(subs)):
+                    row.append(sub_rows[r][idx])
+                f.write("\t".join(row) + "\n")
+        with open(TEMP / "durations.txt", "w", encoding="utf-8") as f:
+            total = 0.0
+            for i, d in enumerate(new_durs, 1):
+                total += d
+                f.write(f"{i:02d}\t{d:.3f}s\n")
+            f.write(f"TOTAL\t{total:.3f}s\n")
+    except Exception as e:
+        logging.warning(f"[DEBUG_SCRIPT] write failed: {e}")
 
     if args.lines_only:
         return

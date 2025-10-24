@@ -69,6 +69,7 @@ jobs:
           name: debug-temp
           path: |
             temp/script_raw.txt
+　　　　　　　　temp/script_tts.txt 
             temp/subs_table.tsv
             temp/durations.txt
             temp/script_joined.tsv

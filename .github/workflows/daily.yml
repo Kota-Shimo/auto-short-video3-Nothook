@@ -3,9 +3,13 @@ name: Auto-Vocab-Daily
 on:
   schedule:
     - cron: '0 15 * * *'   # JST00:00
+    - cron: '0 17 * * *'   # JST00:00
+    - cron: '0 19 * * *'   # JST00:00
     - cron: '0 21 * * *'   # JST06:00
     - cron: '0 3  * * *'   # JST12:00
+    - cron: '0 6 * * *'   # JST00:00
     - cron: '0 9  * * *'   # JST18:00
+    - cron: '0 10 * * *'   # JST00:00
   workflow_dispatch:
 
 concurrency:

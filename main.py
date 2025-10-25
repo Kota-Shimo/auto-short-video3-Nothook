@@ -471,11 +471,34 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # 背景画像
+    # 背景画像（日本語テーマを英語に翻訳して検索）
     bg_png = TEMP / "bg.png"
-    first_word = valid_dialogue[0][1] if valid_dialogue else theme
-    fetch_bg(first_word, bg_png)
 
+    try:
+        # 日本語テーマを英語化（例：「朝食」→ "breakfast"）
+        theme_en = translate(theme, "en")
+    except Exception:
+        theme_en = theme
+
+    # first_word（単語リストの最初）も一応使うが、
+    # 日本語など非ASCIIなら英語テーマ優先
+    first_word = valid_dialogue[0][1] if valid_dialogue else theme
+
+    def _is_ascii(s: str) -> bool:
+        try:
+            s.encode("ascii")
+            return True
+        except Exception:
+            return False
+
+    # 検索に使うキーワードを決定
+    if not _is_ascii(first_word or ""):
+        query_for_bg = theme_en or "language learning"
+    else:
+        query_for_bg = first_word or theme_en or "learning"
+
+    fetch_bg(query_for_bg, bg_png)
+    
     # lines.json
     lines_data = []
     for i, ((spk, txt), dur) in enumerate(zip(valid_dialogue, new_durs)):

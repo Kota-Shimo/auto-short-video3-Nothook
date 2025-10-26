@@ -60,7 +60,7 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6        # 生成する単語数
           DEBUG_SCRIPT:        "1"      # デバッグファイル出力（不要なら消す）
-          TARGET_ACCOUNT:      "acc4"   # ★ acc4 のみ実行
+          #TARGET_ACCOUNT:      "acc4"   # ★ acc4 のみ実行
         run: |
           python main.py AUTO \
             --privacy public \

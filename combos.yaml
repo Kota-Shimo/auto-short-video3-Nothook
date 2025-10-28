@@ -30,3 +30,7 @@ combos:
   - audio: ko
     subs: [ko, ja]
     account: acc8   # ← 新規アカウントを使う例
+
+  - audio: pt
+    subs: [pt, en]
+    account: acc9

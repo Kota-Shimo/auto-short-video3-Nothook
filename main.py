@@ -762,24 +762,37 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
         if TARGET_ONLY and account != TARGET_ONLY:
             continue
 
-        # テーマ＆文脈（＋将来の spec）決定
+        # テーマ＆文脈の決定（辞書spec/タプル/文字列の全てに対応）
         picked_topic = topic
         context_hint = ""
-        spec = None
+        extra_spec = {}  # 今後の拡張（pos/relation_mode など）を main 側で参照したくなった時用
+
         if topic.strip().lower() == "auto":
             try:
-                theme_ctx = pick_by_content_type("vocab", audio_lang, return_context=True)
-                # dict(spec) / (theme, ctx) / str のどれでもOK
-                words_count = int(os.getenv("VOCAB_WORDS", "6"))
-                theme_norm, ctx_norm, spec_norm = _normalize_spec(theme_ctx, "", audio_lang, words_count)
-                picked_topic, context_hint, spec = theme_norm, ctx_norm, spec_norm
+                spec = pick_by_content_type("vocab", audio_lang, return_context=True)
+                # 1) 新仕様: dict spec
+                if isinstance(spec, dict) and "theme" in spec:
+                    picked_topic = str(spec.get("theme", "general vocabulary"))
+                    context_hint = str(spec.get("context", "") or "")
+                    extra_spec = spec  # 必要なら run_one の引数に渡す実装へ拡張可（現状は文脈のみ使用）
+
+                # 2) 旧仕様: (theme, context) タプル
+                elif isinstance(spec, tuple) and len(spec) == 2:
+                    picked_topic, context_hint = spec
+
+                # 3) 旧仕様: テーマ文字列
+                else:
+                    picked_topic = str(spec)
+                    context_hint = ""
+
             except TypeError:
-                # 旧シグネチャ（return_context 未対応）
+                # さらに旧シグネチャ（return_context 未対応）
                 picked_topic = pick_by_content_type("vocab", audio_lang)
                 context_hint = ""
-                spec = None
 
-            logging.info(f"[{audio_lang}] picked vocab theme/spec: {picked_topic} | ctx: {context_hint or '-'}")
+            logging.info(
+                f"[{audio_lang}] picked vocab theme: {picked_topic} | ctx: {context_hint or '-'}"
+            )
 
         logging.info(f"=== Combo: {audio_lang}, subs={subs}, account={account}, title_lang={title_lang}, mode={CONTENT_MODE} ===")
         run_one(picked_topic, turns, audio_lang, subs, title_lang, privacy, account, do_upload, chunk_size, context_hint=context_hint, spec=spec)

@@ -76,7 +76,7 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          # TARGET_ACCOUNT:    "acc8"   # ← 個別テストしたい時だけ一時的に有効化
+          TARGET_ACCOUNT:    "acc8"   # ← 個別テストしたい時だけ一時的に有効化
         run: |
           python main.py AUTO \
             --privacy public \

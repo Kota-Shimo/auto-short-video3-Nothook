@@ -2,14 +2,14 @@ name: Auto-Vocab-Daily
 
 on:
   schedule:
-    - cron: '0 15 * * *'   # JST00:00
-    - cron: '0 17 * * *'   # JST00:00
-    - cron: '0 19 * * *'   # JST00:00
-    - cron: '0 21 * * *'   # JST06:00
-    - cron: '0 3  * * *'   # JST12:00
-    - cron: '0 6 * * *'   # JST00:00
-    - cron: '0 9  * * *'   # JST18:00
-    - cron: '0 12 * * *'   # JST00:00
+    - cron: '0 15 * * *'   # JST 00:00
+    - cron: '0 17 * * *'   # JST 02:00
+    - cron: '0 19 * * *'   # JST 04:00
+    - cron: '0 21 * * *'   # JST 06:00
+    - cron: '0 3  * * *'   # JST 12:00
+    - cron: '0 6  * * *'   # JST 15:00
+    - cron: '0 9  * * *'   # JST 18:00
+    - cron: '0 12 * * *'   # JST 21:00
   workflow_dispatch:
 
 concurrency:
@@ -45,7 +45,9 @@ jobs:
           YT_ACC4: ${{ secrets.YT_TOKEN_ACC4 }}
           YT_ACC5: ${{ secrets.YT_TOKEN_ACC5 }}
           YT_ACC6: ${{ secrets.YT_TOKEN_ACC6 }}
+          YT_ACC7: ${{ secrets.YT_TOKEN_ACC7 }}   # ← ★ 追加（acc7: ko→en）
         run: |
+          set -e
           mkdir -p tokens
           echo "$YT_ACC1" | base64 -d > tokens/token_acc1.pkl
           echo "$YT_ACC2" | base64 -d > tokens/token_acc2.pkl
@@ -53,18 +55,17 @@ jobs:
           echo "$YT_ACC4" | base64 -d > tokens/token_acc4.pkl
           echo "$YT_ACC5" | base64 -d > tokens/token_acc5.pkl
           echo "$YT_ACC6" | base64 -d > tokens/token_acc6.pkl
+          echo "$YT_ACC7" | base64 -d > tokens/token_acc7.pkl  # ← ★ 追加
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
-          VOCAB_WORDS:         6        # 生成する単語数
-          DEBUG_SCRIPT:        "1"      # デバッグファイル出力（不要なら消す）
-          #TARGET_ACCOUNT:      "acc4"   # ★ acc4 のみ実行
+          VOCAB_WORDS:         6
+          DEBUG_SCRIPT:        "1"
+          TARGET_ACCOUNT:      "acc7"  # ← acc7 だけ動かしたい時に一時的に有効化
         run: |
-          python main.py AUTO \
-            --privacy public \
-            --chunk 999
+          python main.py AUTO --privacy public --chunk 999
 
       - name: ⤴️ Upload debug artifacts
         if: always()
@@ -73,7 +74,7 @@ jobs:
           name: debug-temp
           path: |
             temp/script_raw.txt
-            temp/script_tts.txt 
+            temp/script_tts.txt
             temp/subs_table.tsv
             temp/durations.txt
             temp/script_joined.tsv

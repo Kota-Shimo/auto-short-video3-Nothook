@@ -1,4 +1,4 @@
-# topic_picker.py – vocab専用のテーマを日替わりで返す（CEFR重み付き・学習本質寄り）
+# topic_picker.py – vocab専用のテーマを日替わりで返す（CEFR重み付き・学習本質寄り + 拡張spec）
 import os
 import random
 import datetime
@@ -165,8 +165,8 @@ def _build_spec(theme: str, audio_lang: str) -> dict:
         "context": _context_for_theme(theme),
         "count": int(os.getenv("VOCAB_WORDS", "6")),
         # 任意指定可（空なら main.py 側の既定にフォールバックされる）
-        "pos": _parse_csv_env("VOCAB_POS"),  # 例: "noun,verb,adjective"
-        "relation_mode": _relation_mode_of_day(audio_lang),  # 例: synonym / antonym / collocation / pattern / ""
+        "pos": _parse_csv_env("VOCAB_POS"),             # 例: "noun,verb,adjective"
+        "relation_mode": _relation_mode_of_day(audio_lang),  # "synonym"/"antonym"/"collocation"/"pattern"/""
         "difficulty": os.getenv("CEFR_LEVEL", "A2").upper(), # A1/A2/B1…
         "pattern_hint": os.getenv("PATTERN_HINT", "").strip(),  # 例: "Would you like ...?"
         "morphology": _parse_csv_env("MORPHOLOGY"),            # 例: "prefix:un-,suffix:-able"
@@ -175,21 +175,30 @@ def _build_spec(theme: str, audio_lang: str) -> dict:
 
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
     """
-    vocab の場合に、学習本質に沿ったテーマを日替わりで返す。
+    vocab の場合に、学習本質に沿ったテーマを返す。
     - CEFR_LEVEL（A1/A2/B1）で機能系とシーン系の比率を変更
-    - UTC日付 + audio_lang で毎日安定した結果（言語ごとに独立ローテ）
-    return_context=True の場合:
-        後方互換のため (theme, context) を返していたが、
-        拡張版では辞書 spec（theme/context/count/pos/relation_mode/difficulty/pattern_hint/morphology）を返す。
-        main.py 側は dict / (theme, ctx) / str の全てを受け取れる実装。
-    それ以外の content_type が来た場合は汎用値を返す。
+    - UTC日付 + audio_lang で毎日安定（言語ごとに独立ローテ）
+
+    return_context=False:  従来互換 → テーマ文字列を返す
+    return_context=True:   拡張     → 辞書specを返す（theme/context/count/pos/relation_mode/difficulty/pattern_hint/morphology）
+
+    vocab 以外は従来の汎用値を返す。
     """
     ct = (content_type or "vocab").lower()
     if ct != "vocab":
         if return_context:
-            # 従来互換
             theme = "general vocabulary"
-            return theme, _context_for_theme(theme)
+            # 後方互換のため (theme, context) を返していたが、main 側で dict も扱えるため dict で返す
+            return {
+                "theme": theme,
+                "context": _context_for_theme(theme),
+                "count": int(os.getenv("VOCAB_WORDS", "6")),
+                "pos": [],
+                "relation_mode": "",
+                "difficulty": os.getenv("CEFR_LEVEL", "A2").upper(),
+                "pattern_hint": "",
+                "morphology": [],
+            }
         return "general vocabulary"
 
     theme = _pick_theme(audio_lang)
@@ -205,5 +214,5 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
 if __name__ == "__main__":
     # 後方互換（テーマのみ）
     print(pick_by_content_type("vocab", "en"))
-    # 文脈つき（拡張 spec）
+    # 拡張spec
     print(pick_by_content_type("vocab", "en", return_context=True))

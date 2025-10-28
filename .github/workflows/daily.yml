@@ -37,7 +37,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: 🔑 Restore YouTube tokens (acc1–acc8, guard if missing)
+      - name: 🔑 Restore YouTube tokens (acc1–acc9, guard if missing)
         env:
           YT_ACC1: ${{ secrets.YT_TOKEN_ACC1 }}
           YT_ACC2: ${{ secrets.YT_TOKEN_ACC2 }}
@@ -47,6 +47,7 @@ jobs:
           YT_ACC6: ${{ secrets.YT_TOKEN_ACC6 }}
           YT_ACC7: ${{ secrets.YT_TOKEN_ACC7 }}
           YT_ACC8: ${{ secrets.YT_TOKEN_ACC8 }}
+          YT_ACC9: ${{ secrets.YT_TOKEN_ACC9 }}
         run: |
           set -e
           mkdir -p tokens
@@ -69,6 +70,7 @@ jobs:
           restore_token acc6 "$YT_ACC6"
           restore_token acc7 "$YT_ACC7"
           restore_token acc8 "$YT_ACC8"
+          restore_token acc9 "$YT_ACC9"
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
@@ -76,7 +78,7 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          TARGET_ACCOUNT:    "acc8"   # ← 個別テストしたい時だけ一時的に有効化
+          # TARGET_ACCOUNT:    "acc9"   # ← 個別テストしたい時だけ有効化
         run: |
           python main.py AUTO \
             --privacy public \

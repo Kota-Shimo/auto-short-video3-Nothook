@@ -1,5 +1,3 @@
-いいね。それをしてこう。修正して。
-
 # topic_picker.py – vocab専用のテーマを日替わりで返す（CEFR重み付き・学習本質寄り）
 import os
 import random

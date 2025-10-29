@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋先頭無音＋最短1秒）
-- 例文は常に「1文だけ」。バリデーション失敗時は最大3回まで再生成し、最後はフェールセーフ。
+- 例文は常に「1文だけ」。バリデーション失敗時は最大5回まで再生成し、最後はフェールセーフ（多言語）。
 - 翻訳（字幕）は1行化し、複文は先頭1文のみ採用。URL/絵文字/余分な空白を除去。
 - 追加: TARGET_ACCOUNT/--account で combos をアカウント単位に絞り込み可能。
 - 追加: topic_picker の文脈ヒント（context）を例文生成に渡して日本語崩れを抑制。
@@ -46,7 +46,7 @@ LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト
 
 LANG_NAME = {
     "en": "English", "pt": "Portuguese", "id": "Indonesian",
-    "ja": "Japanese","ko": "Korean", "es": "Spanish",
+    "ja": "Japanese","ko": "Korean", "es": "Spanish", "fr": "French",
 }
 
 JP_CONV_LABEL = {
@@ -190,7 +190,7 @@ def _lang_rules(lang_code: str) -> str:
         return (
             "Write entirely in Japanese. "
             "Do not include Latin letters or other languages. "
-            "Avoid ASCII symbols such as '/', '-', '→', '()', '[]', '<>', and '|'. "
+            "Avoid ASCII symbols such as '/', '-', '→', '()", '[]', '<>', and '|'. "
             "No translation glosses, brackets, or country/language mentions."
         )
     lang_name = LANG_NAME.get(lang_code, "English")
@@ -243,8 +243,8 @@ def _example_temp_for(lang_code: str) -> float:
 
 def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> str:
     """
-    1文だけ生成。バリデーション不合格なら最大3回まで再生成。
-    失敗時フェールセーフ（ja: テンプレ / 他言語: Let's practice ...）
+    1文だけ生成。バリデーション不合格なら最大5回まで再生成。
+    失敗時フェールセーフ（多言語対応）。
     context_hint を文脈ヒントとして活用。
     """
     lang_name = LANG_NAME.get(lang_code, "English")
@@ -278,7 +278,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         if ctx:
             user += f" Scene hint: {ctx}"
 
-    for _ in range(3):
+    for _ in range(5):  # ← 試行回数を5回に増加
         try:
             rsp = GPT.chat.completions.create(
                 model="gpt-4o-mini",
@@ -302,10 +302,21 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         if valid and contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
-    # フェールセーフ
+    # フェールセーフ（多言語対応）
     if lang_code == "ja":
         return _ja_template_fallback(word)
-    return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
+    elif lang_code == "es":
+        return _ensure_period_for_sentence(f"Practiquemos {word}", lang_code)
+    elif lang_code == "pt":
+        return _ensure_period_for_sentence(f"Vamos praticar {word}", lang_code)
+    elif lang_code == "fr":
+        return _ensure_period_for_sentence(f"Pratiquons {word}", lang_code)
+    elif lang_code == "id":
+        return _ensure_period_for_sentence(f"Ayo berlatih {word}", lang_code)
+    elif lang_code == "ko":
+        return _ensure_period_for_sentence(f"{word}를 연습해 봅시다", lang_code)
+    else:
+        return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
 
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
     theme_for_prompt = translate(theme, lang_code) if lang_code != "en" else theme

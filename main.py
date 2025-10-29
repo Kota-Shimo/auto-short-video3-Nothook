@@ -127,6 +127,62 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
     return t
 
 # ───────────────────────────────────────────────
+# 翻訳の強化（例文用）：translate()が原文のまま返す場合の再実行
+# ───────────────────────────────────────────────
+_ASCII_ONLY = re.compile(r'^[\x00-\x7F]+$')
+
+def _looks_like_english(s: str) -> bool:
+    s = (s or "").strip()
+    return bool(_ASCII_ONLY.fullmatch(s)) and bool(re.search(r'[A-Za-z]', s))
+
+def _needs_retranslate(output: str, src_lang: str, target_lang: str, original: str) -> bool:
+    if target_lang == src_lang:
+        return False
+    out = (output or "").strip()
+    if not out:
+        return True
+    if out.lower() == (original or "").strip().lower():
+        return True
+    if target_lang == "en" and not _looks_like_english(out):
+        return True
+    return False
+
+def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) -> str:
+    """まず既存 translate を使い、必要なら厳密プロンプトで再翻訳する。"""
+    try:
+        first = translate(sentence, target_lang)
+    except Exception:
+        first = ""
+
+    if not _needs_retranslate(first, src_lang, target_lang, sentence):
+        return _clean_sub_line(first, target_lang)
+
+    try:
+        rsp = GPT.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role":"user",
+                "content":(
+                    f"Translate from {LANG_NAME.get(src_lang,'source language')} "
+                    f"to {LANG_NAME.get(target_lang,'target language')}.\n"
+                    "Return ONLY the translation as a single sentence. "
+                    "No explanations, no quotes, no extra symbols.\n\n"
+                    f"Text: {sentence}"
+                )
+            }],
+            temperature=0.0, top_p=1.0
+        )
+        out = (rsp.choices[0].message.content or "").strip()
+        out = _clean_sub_line(out, target_lang)
+        if out:
+            return out
+    except Exception:
+        pass
+
+    # フェイルセーフ：最悪は原文を返す（その後 _clean_sub_line が効く）
+    return _clean_sub_line(sentence, target_lang)
+
+# ───────────────────────────────────────────────
 # ラングエージルール（厳密モノリンガル & 記号/注釈禁止）
 # ───────────────────────────────────────────────
 def _lang_rules(lang_code: str) -> str:
@@ -644,8 +700,8 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
-                        # 例文行は従来どおり文翻訳
-                        trans = translate(line, lang)
+                        # 例文行はまず通常翻訳 → ダメなら厳密プロンプトで再翻訳
+                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
                 except Exception:
                     trans = line
                 sub_rows[r].append(_clean_sub_line(trans, lang))

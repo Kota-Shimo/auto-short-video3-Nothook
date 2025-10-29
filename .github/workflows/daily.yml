@@ -29,9 +29,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: 📦 Install requirements
         run: |
+          set -euxo pipefail
           sudo apt-get update -y
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
@@ -49,12 +51,12 @@ jobs:
           YT_ACC8: ${{ secrets.YT_TOKEN_ACC8 }}
           YT_ACC9: ${{ secrets.YT_TOKEN_ACC9 }}
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p tokens
 
           restore_token() {
             local NAME="$1" ; local VAL="$2"
-            if [ -n "$VAL" ]; then
+            if [ -n "${VAL:-}" ]; then
               echo "Restoring $NAME ..."
               echo "$VAL" | base64 -d > "tokens/token_${NAME}.pkl"
             else
@@ -78,7 +80,9 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          TARGET_ACCOUNT:    "acc9"   # ← 個別テストしたい時だけ有効化
+          # 任意：上限に当たったら順にフォールバック（例）
+          # UPLOAD_FALLBACKS:  "acc2,acc3,acc4"
+          # ※ 全アカウント回す本番では TARGET_ACCOUNT は設定しない
         run: |
           python main.py AUTO \
             --privacy public \
@@ -95,4 +99,5 @@ jobs:
             temp/subs_table.tsv
             temp/durations.txt
             temp/script_joined.tsv
+            temp/spec.json
           if-no-files-found: ignore

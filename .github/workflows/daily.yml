@@ -80,9 +80,7 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          # 任意：上限に当たったら順にフォールバック（例）
-          # UPLOAD_FALLBACKS:  "acc2,acc3,acc4"
-          # ※ 全アカウント回す本番では TARGET_ACCOUNT は設定しない
+          TARGET_ACCOUNT:      "acc3"      # ←★ この1行を追加
         run: |
           python main.py AUTO \
             --privacy public \

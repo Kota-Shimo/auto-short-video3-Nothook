@@ -125,7 +125,6 @@ def _pick_theme(audio_lang: str) -> str:
     if override:
         return override
 
-    # 実行ごとにランダム（暗号学的PRNGで揺らぎを強める）
     rng = random.SystemRandom()
     return rng.choice(pool)
 
@@ -148,34 +147,67 @@ def _parse_csv_env(name: str):
         return []
     return [x.strip() for x in v.split(",") if x.strip()]
 
+# === ランダム選択ヘルパ ===
+def _random_pos():
+    """環境変数 VOCAB_POS が未指定の場合のみ、単一品詞 or 指定なしをランダム選択。"""
+    env = _parse_csv_env("VOCAB_POS")
+    if env:
+        return env  # 既存互換：明示指定を尊重
+    rng = random.SystemRandom()
+    return rng.choice([[], ["noun"], ["verb"], ["adjective"]])
+
+def _random_difficulty():
+    """環境変数 CEFR_LEVEL が未指定の場合のみ、A1/A2/B1 をランダム選択。"""
+    env = os.getenv("CEFR_LEVEL", "").strip().upper()
+    if env in ("A1", "A2", "B1"):
+        return env
+    rng = random.SystemRandom()
+    return rng.choice(["A1", "A2", "B1"])
+
+def _random_pattern_hint():
+    """環境変数 PATTERN_HINT が未指定の場合のみ、パターン意図をランダム選択（空も混ぜる）。"""
+    env = os.getenv("PATTERN_HINT", "").strip()
+    if env:
+        return env
+    rng = random.SystemRandom()
+    pool = [
+        "",  # 指定なし（バリエーション確保）
+        "polite_request",
+        "ask_availability",
+        "confirm_detail",
+        "make_suggestion",
+        "give_advice",
+        "express_opinion",
+    ]
+    return rng.choice(pool)
+
 def _build_spec(theme: str, audio_lang: str) -> dict:
     """
-    環境変数で基準を上書きできる spec を構築。
-    未指定は空またはデフォルト（従来互換）。
+    spec を構築（ENV最優先・未指定はランダム）:
+    - pos: [], ["noun"], ["verb"], ["adjective"] のいずれか
+    - difficulty: A1/A2/B1 のいずれか
+    - pattern_hint: 上記パターンのいずれか（空含む）
     """
     spec = {
         "theme": theme,
         "context": _context_for_theme(theme),
         "count": int(os.getenv("VOCAB_WORDS", "6")),
-        # 任意指定可（空なら main.py 側の既定にフォールバックされる）
-        "pos": _parse_csv_env("VOCAB_POS"),             # 例: "noun,verb,adjective"
-        "relation_mode": _relation_mode_of_day(audio_lang),  # "synonym"/"antonym"/"collocation"/"pattern"/""
-        "difficulty": os.getenv("CEFR_LEVEL", "A2").upper(), # A1/A2/B1…
-        "pattern_hint": os.getenv("PATTERN_HINT", "").strip(),  # 例: "Would you like ...?"
-        "morphology": _parse_csv_env("MORPHOLOGY"),            # 例: "prefix:un-,suffix:-able"
+        "pos": _random_pos(),
+        "relation_mode": _relation_mode_of_day(audio_lang),
+        "difficulty": _random_difficulty(),
+        "pattern_hint": _random_pattern_hint(),
+        "morphology": _parse_csv_env("MORPHOLOGY"),  # 既存互換：必要ならENVで
     }
     return spec
 
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
     """
-    vocab の場合に、学習本質に沿ったテーマを返す。
-    - CEFR_LEVEL（A1/A2/B1）で機能系とシーン系の比率を変更
-    - 実行ごとにランダム（言語ごと固定シードは廃止）
+    vocab の場合に、学習本質に沿ったテーマと spec を返す。
+    - CEFR_LEVEL（A1/A2/B1）で機能系とシーン系の比率を変更（テーマ選択）
+    - pos/difficulty/pattern_hint は ENV 未指定ならランダムで決定
 
     return_context=False:  従来互換 → テーマ文字列を返す
     return_context=True:   拡張     → 辞書specを返す（theme/context/count/pos/relation_mode/difficulty/pattern_hint/morphology）
-
-    vocab 以外は従来の汎用値を返す。
     """
     ct = (content_type or "vocab").lower()
     if ct != "vocab":
@@ -187,8 +219,8 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
                 "count": int(os.getenv("VOCAB_WORDS", "6")),
                 "pos": [],
                 "relation_mode": "",
-                "difficulty": os.getenv("CEFR_LEVEL", "A2").upper(),
-                "pattern_hint": "",
+                "difficulty": _random_difficulty(),
+                "pattern_hint": _random_pattern_hint(),
                 "morphology": [],
             }
         return "general vocabulary"
@@ -196,7 +228,6 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
     theme = _pick_theme(audio_lang)
 
     if not return_context:
-        # 従来互換（テーマ文字列のみ）
         return theme
 
     # 拡張：spec を返す（main.py が dict をそのまま扱える）

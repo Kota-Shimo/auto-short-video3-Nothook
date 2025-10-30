@@ -551,25 +551,81 @@ def translate_word_context(word: str, target_lang: str, src_lang: str, theme: st
 # ───────────────────────────────────────────────
 # メタ生成（タイトル言語に統一）
 # ───────────────────────────────────────────────
-def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
-    if title_lang not in LANG_NAME:
-        title_lang = "en"
-    try:
-        theme_local = theme if title_lang == "en" else translate(theme, title_lang)
-    except Exception:
-        theme_local = theme
+# ───────────────────────────────────────────────
+# メタ生成（タイトル言語に統一 + POS/Difficulty対応 + LLM補強）
+# ───────────────────────────────────────────────
+def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None,
+               pos: list[str] | None = None,
+               difficulty: str | None = None,
+               pattern_hint: str | None = None):
+    """
+    YouTube向けタイトル生成（安全フォールバック付き）
+    - 品詞(pos), 難易度(difficulty), pattern_hintを含む
+    - LLMが失敗しても既存タイトルに確実フォールバック
+    """
 
-    if title_lang == "ja":
-        base = f"{theme_local} で使える一言"
-        label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
-        t = f"{label} {base}" if label and label not in base else base
-        return sanitize_title(t)[:28]
-    else:
-        if title_lang == "en":
-            t = f"{theme_local.capitalize()} vocab in one minute"
+    # 安全フォールバック関数
+    def _fallback_title():
+        try:
+            theme_local = theme if title_lang == "en" else translate(theme, title_lang)
+        except Exception:
+            theme_local = theme
+
+        cefr = difficulty or "A2"
+        pos_tag = ""
+        if pos and isinstance(pos, list) and len(pos) == 1:
+            pos_tag = f"[{pos[0]}]"
+        if title_lang == "ja":
+            base = f"{theme_local}で使える英語（{cefr}）"
+            if pos_tag:
+                base = f"{pos_tag} {base}"
+            label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
+            t = f"{label} {base}" if label and label not in base else base
+            return sanitize_title(t)[:35]
         else:
-            t = f"{theme_local} vocabulary"
-        return sanitize_title(t)[:55]
+            t = f"{theme_local.capitalize()} vocab ({cefr})"
+            return sanitize_title(t)[:70]
+
+    # LLMを使ったタイトル生成
+    try:
+        pos_str = ", ".join(pos) if pos else ""
+        cefr = difficulty or "A2"
+        pattern = pattern_hint or ""
+        theme_local = translate(theme, "ja") if title_lang == "ja" else theme
+
+        rules = (
+            "You are a YouTube title creator for English-learning short videos. "
+            "Write ONE concise, clickable Japanese title under 40 characters. "
+            "Avoid emojis, quotes, or extra punctuation. "
+            "Reflect the topic naturally (not literal translation)."
+        )
+
+        prompt = (
+            f"{rules}\n\n"
+            f"Theme: {theme_local}\n"
+            f"Part of speech: {pos_str}\n"
+            f"Difficulty: {cefr}\n"
+            f"Pattern: {pattern}\n\n"
+            "Examples:\n"
+            "ホテルチェックインで使える英語（A2）\n"
+            "理由を丁寧に伝える英語フレーズ（B1）\n"
+            "動詞を中心に覚える！職場で使える英語（B1）"
+        )
+
+        rsp = GPT.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            top_p=0.9,
+        )
+        out = (rsp.choices[0].message.content or "").strip()
+        title = sanitize_title(out)
+        if not title or len(title) < 4:
+            return _fallback_title()
+        # ここで最終強制トリム（言語別の目標幅）
+        return title[:40] if (title_lang == "ja") else title[:70]
+    except Exception:
+        return _fallback_title()
 
 def make_desc(theme, title_lang: str):
     if title_lang not in LANG_NAME:
@@ -589,18 +645,29 @@ def make_desc(theme, title_lang: str):
     }
     return msg.get(title_lang, msg["en"])
 
-def make_tags(theme, audio_lang, subs, title_lang):
+# ───────────────────────────────────────────────
+# タグ生成（難易度・品詞バッジを追加）
+# ───────────────────────────────────────────────
+def make_tags(theme, audio_lang, subs, title_lang, difficulty=None, pos=None):
     tags = [
         theme, "vocabulary", "language learning", "speaking practice",
         "listening practice", "subtitles"
     ]
+    if difficulty:
+        tags.append(f"CEFR {difficulty}")
+    if pos:
+        for p in pos:
+            tags.append(p)
+
     for code in subs:
         if code in LANG_NAME:
             tags.append(f"{LANG_NAME[code]} subtitles")
+
     seen, out = set(), []
     for t in tags:
         if t not in seen:
-            seen.add(t); out.append(t)
+            seen.add(t)
+            out.append(t)
     return out[:15]
 
 # ───────────────────────────────────────────────
@@ -819,10 +886,21 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         return
 
     # メタ生成＆アップロード
-    title = make_title(theme, title_lang, audio_lang_for_label=audio_lang)
-    desc  = make_desc(theme, title_lang)
-    tags  = make_tags(theme, audio_lang, subs, title_lang)
+    pos_for_title = None
+    difficulty_for_title = None
+    pattern_for_title = None
+    if isinstance(spec, dict):
+        pos_for_title = spec.get("pos") or None
+        difficulty_for_title = spec.get("difficulty") or None
+        pattern_for_title = spec.get("pattern_hint") or None
 
+    title = make_title(
+        theme, title_lang, audio_lang_for_label=audio_lang,
+        pos=pos_for_title, difficulty=difficulty_for_title, pattern_hint=pattern_for_title
+    )
+    desc  = make_desc(theme, title_lang)
+    tags  = make_tags(theme, audio_lang, subs, title_lang,
+                      difficulty=difficulty_for_title, pos=pos_for_title)
     # ─────────────────────────────
     # 改良版アップロード（トークン切れ＆上限対応）
     # ─────────────────────────────

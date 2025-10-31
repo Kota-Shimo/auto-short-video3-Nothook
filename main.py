@@ -355,7 +355,7 @@ def _gen_example_sentence(
         except Exception:
             contains_word = True
 
-        if valid && contains_word:
+        if valid & contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
     # フェールセーフ

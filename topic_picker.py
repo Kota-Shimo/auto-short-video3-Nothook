@@ -108,27 +108,30 @@ def _context_for_theme(theme: str) -> str:
     # デフォルト文脈
     return "A simple everyday situation with polite, practical language."
 
-def _pick_theme(audio_lang: str) -> str:
-    """CEFR_LEVEL を考慮しつつ、毎回ランダム選出（実行ごとに変化）。"""
-    level = os.getenv("CEFR_LEVEL", "A2").upper()
 
-    # 学習段階に応じた重み付け
-    if level == "A1":
-        pool = (VOCAB_THEMES_FUNCTIONAL * 7) + (VOCAB_THEMES_SCENE * 3)
-    elif level == "B1":
-        pool = (VOCAB_THEMES_FUNCTIONAL * 4) + (VOCAB_THEMES_SCENE * 6)
-    elif level == "B2":
-        pool = (VOCAB_THEMES_FUNCTIONAL * 6) + (VOCAB_THEMES_SCENE * 4)
-    else:  # 既定 A2
-        pool = (VOCAB_THEMES_FUNCTIONAL * 5) + (VOCAB_THEMES_SCENE * 5)
-
-    # 任意のテーマ固定（テスト/デバッグ用）
+# === 難易度に連動してテーマを選ぶ（比率違いのプールから抽選） ===
+def _pick_theme_for_level(level: str) -> str:
+    """
+    level（A1/A2/B1/B2）に応じて、機能系/シーン系の比率を変えてプールを作り、そこからランダム選択。
+    THEME_OVERRIDE があればそちらを最優先。
+    """
     override = os.getenv("THEME_OVERRIDE", "").strip()
     if override:
         return override
 
+    lv = (level or "A2").upper()
+    if lv == "A1":
+        pool = (VOCAB_THEMES_FUNCTIONAL * 7) + (VOCAB_THEMES_SCENE * 3)
+    elif lv == "B1":
+        pool = (VOCAB_THEMES_FUNCTIONAL * 4) + (VOCAB_THEMES_SCENE * 6)
+    elif lv == "B2":
+        pool = (VOCAB_THEMES_FUNCTIONAL * 6) + (VOCAB_THEMES_SCENE * 4)
+    else:  # 既定 A2
+        pool = (VOCAB_THEMES_FUNCTIONAL * 5) + (VOCAB_THEMES_SCENE * 5)
+
     rng = random.SystemRandom()
     return rng.choice(pool)
+
 
 def _relation_mode_of_day(audio_lang: str) -> str:
     """
@@ -143,11 +146,13 @@ def _relation_mode_of_day(audio_lang: str) -> str:
     modes = ["synonym", "collocation", "pattern", "antonym", ""]
     return rng.choice(modes)
 
+
 def _parse_csv_env(name: str):
     v = os.getenv(name, "").strip()
     if not v:
         return []
     return [x.strip() for x in v.split(",") if x.strip()]
+
 
 # === ランダム選択ヘルパ ===
 def _random_pos():
@@ -157,6 +162,7 @@ def _random_pos():
         return env
     rng = random.SystemRandom()
     return rng.choice([[], ["noun"], ["verb"], ["adjective"]])
+
 
 def _random_difficulty():
     """
@@ -168,6 +174,7 @@ def _random_difficulty():
         return env
     rng = random.SystemRandom()
     return rng.choice(["A2", "B1", "B2"])
+
 
 def _random_pattern_hint():
     """ENV未指定なら、汎用パターン意図をランダム選択（空も混ぜてバリエーション確保）。"""
@@ -188,11 +195,12 @@ def _random_pattern_hint():
     ]
     return rng.choice(pool)
 
-def _build_spec(theme: str, audio_lang: str) -> dict:
+
+def _build_spec(theme: str, audio_lang: str, difficulty: str) -> dict:
     """
     spec を構築（ENV最優先・未指定はランダム）:
     - pos: [], ["noun"], ["verb"], ["adjective"] のいずれか
-    - difficulty: A2/B1/B2 のいずれか（ENVでA1〜B2指定可）
+    - difficulty: pick時に決めた難易度（A1〜B2）
     - pattern_hint: 上記パターンのいずれか（空含む）
     """
     spec = {
@@ -201,22 +209,29 @@ def _build_spec(theme: str, audio_lang: str) -> dict:
         "count": int(os.getenv("VOCAB_WORDS", "6")),
         "pos": _random_pos(),
         "relation_mode": _relation_mode_of_day(audio_lang),
-        "difficulty": _random_difficulty(),
+        "difficulty": (difficulty or "A2").upper(),
         "pattern_hint": _random_pattern_hint(),
         "morphology": _parse_csv_env("MORPHOLOGY"),  # 既存互換：必要ならENVで指定
     }
     return spec
 
+
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
     """
     vocab の場合に、学習本質に沿ったテーマと spec を返す。
-    - CEFR_LEVEL（A1/A2/B1/B2）で機能系とシーン系の比率を変更（テーマ選択）
-    - pos/difficulty/pattern_hint は ENV 未指定ならランダムで決定
+    フロー:
+      1) 難易度を決める（CEFR_LEVELのENV固定 or ランダム）
+      2) 難易度に連動してテーマを抽選（機能系/シーン系の比率を変更）
+      3) return_context=True なら、その難易度を spec.difficulty に入れて返す
 
     return_context=False:  従来互換 → テーマ文字列を返す
     return_context=True:   拡張     → 辞書specを返す（theme/context/count/pos/relation_mode/difficulty/pattern_hint/morphology）
     """
     ct = (content_type or "vocab").lower()
+
+    # 1) 難易度を決定（ENV優先・未指定は A2/B1/B2 のランダム）
+    difficulty = _random_difficulty()
+
     if ct != "vocab":
         if return_context:
             theme = "general vocabulary"
@@ -226,19 +241,21 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
                 "count": int(os.getenv("VOCAB_WORDS", "6")),
                 "pos": [],
                 "relation_mode": "",
-                "difficulty": _random_difficulty(),
+                "difficulty": difficulty,
                 "pattern_hint": _random_pattern_hint(),
                 "morphology": [],
             }
         return "general vocabulary"
 
-    theme = _pick_theme(audio_lang)
+    # 2) 難易度に連動してテーマを抽選
+    theme = _pick_theme_for_level(difficulty)
 
     if not return_context:
         return theme
 
-    # 拡張：spec を返す（main.py が dict をそのまま扱える）
-    return _build_spec(theme, audio_lang)
+    # 3) 拡張：spec を返す（main.py が dict をそのまま扱える）
+    return _build_spec(theme, audio_lang, difficulty)
+
 
 # ローカルテスト用
 if __name__ == "__main__":

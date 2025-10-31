@@ -241,16 +241,49 @@ def _example_temp_for(lang_code: str) -> float:
     # 日本語は特に崩れやすいのでさらに低温度
     return 0.20 if lang_code == "ja" else EX_TEMP_DEFAULT
 
-def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> str:
+def _gen_example_sentence(
+    word: str,
+    lang_code: str,
+    context_hint: str = "",
+    difficulty: str | None = None,  # ← 追加: CEFR ("A1","A2","B1","B2")
+) -> str:
     """
     1文だけ生成。バリデーション不合格なら最大5回まで再生成。
     失敗時フェールセーフ（多言語対応）。
     context_hint を文脈ヒントとして活用。
+    difficulty が指定されていれば CEFR レベルに合わせて簡潔さ・文型を制御。
     """
     lang_name = LANG_NAME.get(lang_code, "English")
     ctx = (context_hint or "").strip()
+    diff = (difficulty or "").strip().upper()
+    if diff not in ("A1", "A2", "B1", "B2"):
+        diff = ""  # 未指定扱い
 
     rules = _lang_rules(lang_code)
+
+    # ── CEFRごとのガイド（プロンプトに効く制約）──
+    cefr_guides = {
+        "A1": (
+            "Use very simple, high-frequency words. "
+            "Present tense. One clause only. No subclauses, no passive, no numbers or dates. "
+            "Keep it short and concrete."
+        ),
+        "A2": (
+            "Use common everyday words. "
+            "Prefer present or simple past. One short clause (or two joined by 'and' at most). "
+            "Avoid complex relative clauses or conditionals."
+        ),
+        "B1": (
+            "Use clear, everyday language with slightly more detail. "
+            "One sentence, but may include a short reason or condition. Avoid rare idioms."
+        ),
+        "B2": (
+            "Use natural, precise language. "
+            "One sentence with good flow; mild nuance allowed, but avoid overly technical words."
+        ),
+        "": "",  # 未指定
+    }
+    cefr_line = cefr_guides.get(diff, "")
 
     system = {
         "role": "system",
@@ -260,6 +293,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         ),
     }
 
+    # 例文生成プロンプト（言語別）
     if lang_code == "ja":
         user = (
             f"{rules} "
@@ -269,6 +303,14 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         )
         if ctx:
             user += f" シーンの文脈: {ctx}"
+        if cefr_line:
+            # 英文のままでもモデルは理解しますが、和文ヒントを軽く付すと安定
+            user += " 難易度目安: " + {
+                "A1": "ごく簡単な語で、現在形。節は1つだけ。",
+                "A2": "日常語で短く。現在形中心。複雑な関係節は使わない。",
+                "B1": "わかりやすく。理由や条件を短く含めてもよいが1文で。",
+                "B2": "自然で正確に。専門的すぎる語は避ける。"
+            }[diff] if diff else ""
     else:
         user = (
             f"{rules} "
@@ -277,13 +319,27 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         )
         if ctx:
             user += f" Scene hint: {ctx}"
+        if cefr_line:
+            user += f" CEFR level: {diff}. {cefr_line}"
 
-    for _ in range(5):  # ← 試行回数を5回に増加
+    # 難易度で温度を微調整（単純化）
+    if diff == "A1":
+        local_temp = 0.10
+    elif diff == "A2":
+        local_temp = 0.18 if lang_code == "ja" else 0.22
+    elif diff == "B1":
+        local_temp = 0.28
+    elif diff == "B2":
+        local_temp = 0.32
+    else:
+        local_temp = _example_temp_for(lang_code)
+
+    for _ in range(5):
         try:
             rsp = GPT.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[system, {"role":"user","content":user}],
-                temperature=_example_temp_for(lang_code),
+                messages=[system, {"role": "user", "content": user}],
+                temperature=local_temp,
                 top_p=0.9,
                 presence_penalty=0,
                 frequency_penalty=0,
@@ -295,14 +351,14 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         cand = _clean_strict(raw)
         valid = bool(cand) and _is_single_sentence(cand) and _fits_length(cand, lang_code)
         try:
-            contains_word = (word.lower() in cand.lower()) if lang_code not in ("ja","ko","zh") else (word in cand)
+            contains_word = (word.lower() in cand.lower()) if lang_code not in ("ja", "ko", "zh") else (word in cand)
         except Exception:
             contains_word = True
 
-        if valid and contains_word:
+        if valid && contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
-    # フェールセーフ（多言語対応）
+    # フェールセーフ
     if lang_code == "ja":
         return _ja_template_fallback(word)
     elif lang_code == "es":
@@ -317,7 +373,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         return _ensure_period_for_sentence(f"{word}를 연습해 봅시다", lang_code)
     else:
         return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
-
+        
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
     theme_for_prompt = translate(theme, lang_code) if lang_code != "en" else theme
     prompt = (

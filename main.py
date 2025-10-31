@@ -573,13 +573,35 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None,
             pos_tag = f"[{pos[0]}] "
 
         # 言語別の最小フォールバック
-        if title_lang == "ja":
-            label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
-            base = f"{theme_local}で使える英語（{cefr}）"
-            t = f"{pos_tag}{base}"
-            if label and label not in t:
-                t = f"{label} {t}"
-            return sanitize_title(t)[:40]
+if title_lang == "ja":
+    # 音声言語に完全同期（英語をデフォルトにしない）
+    al = (audio_lang_for_label or "").strip()
+    label = JP_CONV_LABEL.get(al, "")                    # 例: "韓国語会話"
+    lang_name = JP_LANG_NAME.get(al, "外国語")           # 例: "韓国語"
+
+    base = f"{theme_local}で使える{lang_name}（{cefr}）"
+    t = f"{pos_tag}{base}"
+
+    # 先頭に「◯◯語会話」を付与（重複は避ける）
+    if label and label not in t:
+        t = f"{label} {t}"
+
+    t = sanitize_title(t)[:40]
+
+    # 念のため英語固定語が混入していたら差し替える保険
+    if al != "en":
+        t = re.sub(r"(英語フレーズ|英語表現|英語)", lang_name, t)
+
+    return t
+
+    base = f"{theme_local}で使える{lang_name}（{cefr}）"
+    t = f"{pos_tag}{base}"
+
+    # 会話ラベル（韓国語会話など）を先頭に付ける
+    if label and label not in t:
+        t = f"{label} {t}"
+
+    return sanitize_title(t)[:40]
 
         # 主要言語の軽量フォールバック
         fallback_templates = {

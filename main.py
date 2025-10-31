@@ -52,14 +52,6 @@ LANG_NAME = {
 JP_CONV_LABEL = {
     "en": "英会話", "ja": "日本語会話", "es": "スペイン語会話",
     "pt": "ポルトガル語会話", "ko": "韓国語会話", "id": "インドネシア語会話",
-    "fr": "フランス語会話",
-}
-
-# ★ 追加：日本語で言語名を出すためのマップ
-JP_LANG_NAME = {
-    "en": "英語", "ja": "日本語", "es": "スペイン語",
-    "pt": "ポルトガル語", "ko": "韓国語", "id": "インドネシア語",
-    "fr": "フランス語",
 }
 
 with open(BASE / "combos.yaml", encoding="utf-8") as f:
@@ -95,7 +87,7 @@ def resolve_topic(arg_topic: str) -> str:
 _URL_RE   = re.compile(r"https?://\S+")
 _NUM_LEAD = re.compile(r"^\s*\d+[\).:\-]\s*")
 _QUOTES   = re.compile(r'^[\"“”\']+|[\"“”\']+$')
-_EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]")
+_EMOJI_RE = re.compile(r"[\U00010000-\U0010ffff]")  # ざっくり絵文字
 _SENT_END = re.compile(r"[。.!?！？]")
 
 def _normalize_spaces(t: str) -> str:
@@ -107,7 +99,8 @@ def _clean_strict(text: str) -> str:
     t = _NUM_LEAD.sub("", t)
     t = _QUOTES.sub("", t)
     t = _EMOJI_RE.sub("", t)
-    t = re.sub(r"[\:\-–—]\s*$", "", t)  # 末尾の余計な記号
+    # 末尾の余計な記号
+    t = re.sub(r"[\:\-–—]\s*$", "", t)
     return _normalize_spaces(t)
 
 def _is_single_sentence(text: str) -> bool:
@@ -116,21 +109,25 @@ def _is_single_sentence(text: str) -> bool:
 def _fits_length(text: str, lang_code: str) -> bool:
     if lang_code in ("ja", "ko", "zh"):
         return len(text or "") <= 30
+    # 英語などは語数で
     return len(re.findall(r"\b\w+\b", text or "")) <= 12
 
 def _ensure_period_for_sentence(txt: str, lang_code: str) -> str:
     t = txt or ""
     return t if re.search(r"[。.!?！？]$", t) else t + ("。" if lang_code == "ja" else ".")
 
+# 字幕用クリーン（翻訳結果に適用）
 def _clean_sub_line(text: str, lang_code: str) -> str:
     t = _clean_strict(text).replace("\n", " ").strip()
+    # 複文は「最初の終止まで」を採用
     m = _SENT_END.search(t)
     if m:
-        t = t[:m.end()]
+        end = m.end()
+        t = t[:end]
     return t
 
 # ───────────────────────────────────────────────
-# 翻訳の強化（例文用）
+# 翻訳の強化（例文用）：translate()が原文のまま返す場合の再実行
 # ───────────────────────────────────────────────
 _ASCII_ONLY = re.compile(r'^[\x00-\x7F]+$')
 
@@ -151,12 +148,15 @@ def _needs_retranslate(output: str, src_lang: str, target_lang: str, original: s
     return False
 
 def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) -> str:
+    """まず既存 translate を使い、必要なら厳密プロンプトで再翻訳する。"""
     try:
         first = translate(sentence, target_lang)
     except Exception:
         first = ""
+
     if not _needs_retranslate(first, src_lang, target_lang, sentence):
         return _clean_sub_line(first, target_lang)
+
     try:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
@@ -178,10 +178,12 @@ def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) ->
             return out
     except Exception:
         pass
+
+    # フェイルセーフ：最悪は原文を返す（その後 _clean_sub_line が効く）
     return _clean_sub_line(sentence, target_lang)
 
 # ───────────────────────────────────────────────
-# ラングエージルール
+# ラングエージルール（厳密モノリンガル & 記号/注釈禁止）
 # ───────────────────────────────────────────────
 def _lang_rules(lang_code: str) -> str:
     if lang_code == "ja":
@@ -193,16 +195,74 @@ def _lang_rules(lang_code: str) -> str:
         )
     lang_name = LANG_NAME.get(lang_code, "English")
     return (
-        f"Write entirely in {lang_name}. "
-        "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '-', '→', '()', '[]', '<>', and '|'. "
-        "No translation glosses, brackets, or country/language mentions."
+            f"Write entirely in {lang_name}. "
+            "Do not code-switch or include other writing systems. "
+            "Avoid ASCII symbols like '/', '-', '→', '()', '[]', '<>', and '|'. "
+            "No translation glosses, brackets, or country/language mentions."
     )
 
 # ───────────────────────────────────────────────
-# 日本語向けヒューリスティック（fallback）
+# ★ 日本語TTS最適化：読み上げ前の正規化
+# ───────────────────────────────────────────────
+# 数字→漢数字（簡易：連番を各桁ごとに〇一二三…へ変換）
+_KANJI_DIGITS = str.maketrans({
+    "0": "〇", "1": "一", "2": "二", "3": "三", "4": "四",
+    "5": "五", "6": "六", "7": "七", "8": "八", "9": "九"
+})
+_PARENS_ALL = re.compile(r"\s*[\(\（\[\【\<〈]\s*[^)\]\】\>〉]{1,80}\s*[\)\）\]\】\>〉]\s*")
+_MULTI_PUNCS = re.compile(r"[、。]{2,}")
+_ASCII_BLOCKS = re.compile(r"[A-Za-z]{2,}")  # 連続ASCII文字は読みにくいため回避
+
+def _digits_to_kanji(text: str) -> str:
+    # 年号などでも無難に読める「二〇二五」の形式に変換
+    def repl(m: re.Match) -> str:
+        return m.group(0).translate(_KANJI_DIGITS)
+    return re.sub(r"\d+", repl, text)
+
+def normalize_ja_for_tts(text: str) -> str:
+    """
+    日本語TTS向けの軽量整形（外部依存なし）:
+      - カッコ内注釈の除去
+      - スラッシュ/ハイフン/コロン等 → 読点「、」へ
+      - 連続記号の縮約、前後の空白整理
+      - 連続ASCII語の簡易対策（「・」に置換）
+      - 数字は漢数字に置換（各桁）
+      - 文末の句点は付けない（既存ロジックで制御）
+    """
+    t = (text or "").strip()
+
+    # カッコ注釈は読ませない
+    t = _PARENS_ALL.sub(" ", t)
+
+    # ASCII連続語は「・」で切る（例: API → 「API」はそのままにしたいが、連続英字は誤読しやすい）
+    # ここでは極力壊さないため英字ブロックの直後にポーズ「・」を一つ挿入
+    t = _ASCII_BLOCKS.sub(lambda m: m.group(0) + "・", t)
+
+    # 区切り記号→読点
+    t = re.sub(r"[\/|\\:;・･·•\-–—~]", "、", t)
+
+    # 連続スペースの縮約
+    t = re.sub(r"\s+", " ", t)
+
+    # 数字→漢数字
+    t = _digits_to_kanji(t)
+
+    # 読点/句点の連続縮約
+    t = _MULTI_PUNCS.sub(lambda m: m.group(0)[0], t)
+
+    # 句読点と空白の整形
+    t = re.sub(r"\s*([、。])\s*", r"\1", t)
+    t = t.strip()
+    return t
+
+# ───────────────────────────────────────────────
+# 日本語向けヒューリスティック（fallback 用）
 # ───────────────────────────────────────────────
 def _guess_ja_pos(word: str) -> str:
+    """
+    ざっくり品詞推定（辞書なし軽量）
+    戻り値: "verb" / "iadj" / "naadj" / "noun"
+    """
     w = (word or "").strip()
     if not w:
         return "noun"
@@ -232,30 +292,47 @@ def _ja_template_fallback(word: str) -> str:
 # 語彙ユーティリティ
 # ───────────────────────────────────────────────
 def _example_temp_for(lang_code: str) -> float:
+    # 日本語は特に崩れやすいのでさらに低温度
     return 0.20 if lang_code == "ja" else EX_TEMP_DEFAULT
 
 def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> str:
+    """
+    1文だけ生成。バリデーション不合格なら最大5回まで再生成。
+    失敗時フェールセーフ（多言語対応）。
+    context_hint を文脈ヒントとして活用。
+    """
     lang_name = LANG_NAME.get(lang_code, "English")
     ctx = (context_hint or "").strip()
+
     rules = _lang_rules(lang_code)
 
-    system = {"role": "system","content": "You write exactly ONE natural sentence. No lists, no quotes, no emojis, no URLs. Keep it monolingual."}
+    system = {
+        "role": "system",
+        "content": (
+            "You write exactly ONE natural sentence. "
+            "No lists, no quotes, no emojis, no URLs. Keep it monolingual."
+        ),
+    }
 
     if lang_code == "ja":
         user = (
-            f"{rules} 単語「{word}」を必ず含めて、日本語で自然な一文をちょうど1つだけ書いてください。"
+            f"{rules} "
+            f"単語「{word}」を必ず含めて、日本語で自然な一文をちょうど1つだけ書いてください。"
             "日常の簡単な状況を想定し、助詞の使い方を自然にしてください。"
             "かっこ書きや翻訳注釈は不要です。"
         )
-        if ctx: user += f" シーンの文脈: {ctx}"
+        if ctx:
+            user += f" シーンの文脈: {ctx}"
     else:
         user = (
-            f"{rules} Write exactly ONE short, natural sentence in {lang_name} that uses the word: {word}. "
+            f"{rules} "
+            f"Write exactly ONE short, natural sentence in {lang_name} that uses the word: {word}. "
             "Return ONLY the sentence."
         )
-        if ctx: user += f" Scene hint: {ctx}"
+        if ctx:
+            user += f" Scene hint: {ctx}"
 
-    for _ in range(5):
+    for _ in range(5):  # ← 試行回数を5回に増加
         try:
             rsp = GPT.chat.completions.create(
                 model="gpt-4o-mini",
@@ -279,6 +356,7 @@ def _gen_example_sentence(word: str, lang_code: str, context_hint: str = "") -> 
         if valid and contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
+    # フェールセーフ（多言語対応）
     if lang_code == "ja":
         return _ja_template_fallback(word)
     elif lang_code == "es":
@@ -299,15 +377,19 @@ def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
     prompt = (
         f"List {n} essential single or hyphenated words for {theme_for_prompt} context "
         f"in {LANG_NAME.get(lang_code,'English')}. Return ONLY one word per line, no numbering."
-        f"\nAll words must be written in {LANG_NAME.get(lang_code,'the target')} language."
     )
+    # ★ 追加：出力言語を強制
+    prompt += f"\nAll words must be written in {LANG_NAME.get(lang_code,'the target')} language."
+
     content = ""
     try:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
-            temperature=LIST_TEMP, top_p=0.9,
-            presence_penalty=0, frequency_penalty=0,
+            temperature=LIST_TEMP,
+            top_p=0.9,
+            presence_penalty=0,
+            frequency_penalty=0,
         )
         content = (rsp.choices[0].message.content or "")
     except Exception:
@@ -316,51 +398,76 @@ def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
     words = []
     for line in content.splitlines():
         w = (line or "").strip()
-        if not w: continue
-        w = re.sub(r"^\d+[\).]?\s*", "", w)
-        w = re.sub(r"[，、。.!?！？]+$", "", w)
-        w = w.split()[0]
-        if w and w not in words: words.append(w)
+        if not w:
+            continue
+        w = re.sub(r"^\d+[\).]?\s*", "", w)     # 番号
+        w = re.sub(r"[，、。.!?！？]+$", "", w)  # 末尾句読点
+        w = w.split()[0]                        # 先頭トークン
+        if w and w not in words:
+            words.append(w)
 
-    if len(words) >= n: return words[:n]
+    if len(words) >= n:
+        return words[:n]
     fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
     return fallback[:n]
 
 # ───────────────────────────────────────────────
-# ★ spec 正規化＋spec対応の語彙生成
+# ★ 追加：spec 正規化＋spec対応の語彙生成（下位互換保持）
 # ───────────────────────────────────────────────
 def _normalize_spec(picked, context_hint, audio_lang, words_env_count: int):
+    """
+    topic_picker からの戻り値を正規化:
+      - dict(spec) をそのまま受け入れ、欠損は補完
+      - (theme, ctx) なら spec を薄く合成
+      - str(theme) なら既存互換の最小 spec を生成
+    返り値: (theme, context, spec)
+    """
     if isinstance(picked, dict):
         theme = picked.get("theme") or "general vocabulary"
         ctx   = picked.get("context") or (context_hint or "")
-        spec  = dict(picked)
+        spec  = dict(picked)  # コピー
         if "count" not in spec or not isinstance(spec["count"], int):
             spec["count"] = words_env_count
         return theme, ctx, spec
 
     if isinstance(picked, tuple) and len(picked) == 2:
-        theme, ctx = picked
-        spec = {"theme": theme, "context": ctx or (context_hint or ""), "count": words_env_count}
+        theme, ctx = picked[0], picked[1]
+        spec = {
+            "theme": theme,
+            "context": ctx or (context_hint or ""),
+            "count": words_env_count,
+        }
         return theme, ctx, spec
 
+    # string / その他
     theme = str(picked)
     ctx   = context_hint or ""
-    spec = {"theme": theme, "context": ctx, "count": words_env_count}
+    spec = {
+        "theme": theme,
+        "context": ctx,
+        "count": words_env_count,
+    }
     return theme, ctx, spec
 
 def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
+    """
+    spec に含まれる基準（pos / relation_mode / difficulty / pattern_hint / morphology / count など）を
+    プロンプトに反映。未指定は従来挙動。
+    """
     n   = int(spec.get("count", int(os.getenv("VOCAB_WORDS", "6"))))
     th  = spec.get("theme") or "general vocabulary"
-    pos = spec.get("pos") or []
-    rel = (spec.get("relation_mode") or "").strip().lower()
-    diff = (spec.get("difficulty") or "").strip().upper()
+    pos = spec.get("pos") or []  # ["noun","verb",...]
+    rel = (spec.get("relation_mode") or "").strip().lower()  # synonym/antonym/collocation/pattern
+    diff = (spec.get("difficulty") or "").strip().upper()    # A1/A2/B1...
     patt = (spec.get("pattern_hint") or "").strip()
-    morph = spec.get("morphology") or []
+    morph = spec.get("morphology") or []                     # ["prefix:un-","suffix:-able"]
 
     theme_for_prompt = translate(th, lang_code) if lang_code != "en" else th
 
-    lines = [f"You are selecting {n} HIGH-FREQUENCY words for the topic: {theme_for_prompt}."]
-    if pos: lines.append("Restrict part-of-speech to: " + ", ".join(pos) + ".")
+    lines = []
+    lines.append(f"You are selecting {n} HIGH-FREQUENCY words for the topic: {theme_for_prompt}.")
+    if pos:
+        lines.append("Restrict part-of-speech to: " + ", ".join(pos) + ".")
     if rel == "synonym":
         lines.append("Prefer synonyms or near-synonyms around the central topic.")
     elif rel == "antonym":
@@ -369,13 +476,15 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         lines.append("Prefer common collocations used with the topic in everyday speech.")
     elif rel == "pattern":
         lines.append("Prefer short reusable patterns or set phrases.")
-    if patt: lines.append(f"Pattern focus hint: {patt}.")
-    if morph: lines.append("If natural, include related morphological family: " + ", ".join(morph) + ".")
+    if patt:
+        lines.append(f"Pattern focus hint: {patt}.")
+    if morph:
+        lines.append("If natural, include related morphological family: " + ", ".join(morph) + ".")
     if diff in ("A1","A2","B1"):
         lines.append(f"Target approximate CEFR level: {diff}. Keep words short and common for this level.")
     lines.append("Return ONLY one word or short hyphenated term per line, no numbering, no punctuation.")
+    # ★ 追加：出力言語を強制
     lines.append(f"All words must be written in {LANG_NAME.get(lang_code,'the target')} language.")
-
     prompt = "\n".join(lines)
 
     content = ""
@@ -383,8 +492,10 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
-            temperature=LIST_TEMP, top_p=0.9,
-            presence_penalty=0, frequency_penalty=0,
+            temperature=LIST_TEMP,
+            top_p=0.9,
+            presence_penalty=0,
+            frequency_penalty=0,
         )
         content = (rsp.choices[0].message.content or "")
     except Exception:
@@ -393,13 +504,18 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     words = []
     for line in content.splitlines():
         w = (line or "").strip()
-        if not w: continue
-        w = re.sub(r"^\d+[\).]?\s*", "", w)
-        w = re.sub(r"[，、。.!?！？]+$", "", w)
-        w = w.split()[0]
-        if w and w not in words: words.append(w)
+        if not w:
+            continue
+        w = re.sub(r"^\d+[\).]?\s*", "", w)     # 番号除去
+        w = re.sub(r"[，、。.!?！？]+$", "", w)  # 末尾句読点除去
+        w = w.split()[0]                        # 先頭トークン化
+        if w and w not in words:
+            words.append(w)
 
-    if len(words) >= n: return words[:n]
+    if len(words) >= n:
+        return words[:n]
+
+    # 不足時は従来 fallback
     fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
     return (words + [w for w in fallback if w not in words])[:n]
 
@@ -421,7 +537,8 @@ def _kana_reading(word: str) -> str:
                     f"単語: {word}"
                 )
             }],
-            temperature=0.0, top_p=1.0,
+            temperature=0.0,
+            top_p=1.0,
         )
         yomi = (rsp.choices[0].message.content or "").strip()
         yomi = re.sub(r"[^ぁ-ゖゝゞー]+", "", yomi)
@@ -433,7 +550,11 @@ def _kana_reading(word: str) -> str:
 # 例文取得（同じ3行ブロックの3行目）
 # ───────────────────────────────────────────────
 def _example_for_index(valid_dialogue: list[tuple[str, str]], idx0: int) -> str:
-    role_idx = idx0 % 3
+    """
+    valid_dialogue は 3行1組（[word, word, example]）で並ぶ。
+    idx0 がその組の 0/1/2 のいずれでも、例文は常に +2 の位置。
+    """
+    role_idx = idx0 % 3  # 0/1/2
     base = idx0 - role_idx
     ex_pos = base + 2
     if 0 <= ex_pos < len(valid_dialogue):
@@ -444,6 +565,9 @@ def _example_for_index(valid_dialogue: list[tuple[str, str]], idx0: int) -> str:
 # 単語専用・文脈つき翻訳（1語だけ返す）
 # ───────────────────────────────────────────────
 def translate_word_context(word: str, target_lang: str, src_lang: str, theme: str, example: str, pos_hint: str | None = None) -> str:
+    """
+    単語の意味を 例文＋テーマ＋品詞ヒント で確定し、target_lang の“1語のみ”を返す。
+    """
     theme = (theme or "").strip()
     example = (example or "").strip()
     pos_line = f"Part of speech hint: {pos_hint}." if pos_hint else ""
@@ -499,20 +623,13 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None,
         if pos and isinstance(pos, list) and len(pos) == 1:
             pos_tag = f"[{pos[0]}] "
 
-        # 日本語タイトルの厳密フォールバック（音声言語に同期）
         if title_lang == "ja":
-            al = (audio_lang_for_label or "").strip()
-            label = JP_CONV_LABEL.get(al, "")
-            lang_name_ja = JP_LANG_NAME.get(al, "外国語")
-            base = f"{theme_local}で使える{lang_name_ja}（{cefr}）"
+            label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
+            base = f"{theme_local}で使える英語（{cefr}）"
             t = f"{pos_tag}{base}"
             if label and label not in t:
                 t = f"{label} {t}"
-            t = sanitize_title(t)[:40]
-            # 英語固定語が混ざっていたら差し替え（例: 英語フレーズ → 韓国語）
-            if al != "en":
-                t = re.sub(r"(英語フレーズ|英語表現|英語)", lang_name_ja, t)
-            return t
+            return sanitize_title(t)[:40]
 
         # 主要言語の軽量フォールバック
         fallback_templates = {
@@ -533,27 +650,22 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None,
     pattern = pattern_hint or ""
 
     try:
+        # タイトル言語へテーマを翻訳（日本語以外も対応）
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
         theme_local = theme
-
-    # 日本語タイトルで「英語」固定にならないよう、音声言語名を明示
-    al = (audio_lang_for_label or "").strip()
-    lang_name_ja = JP_LANG_NAME.get(al, "外国語")
 
     lang_rules = {
         "ja": {
             "rule": (
                 "You are a YouTube title creator for language-learning Shorts. "
                 "Write ONE concise, clickable Japanese title under 40 characters. "
-                "Avoid emojis, quotes, and extra punctuation. Keep it natural. "
-                f"Do NOT use the word '英語' unless the audio language is English; "
-                f"if you need a language name, use '{lang_name_ja}'."
+                "Avoid emojis, quotes, and extra punctuation. Keep it natural."
             ),
             "examples": [
-                "ホテルチェックインで使える表現（A2）",
-                "職場でよく使うフレーズ（B1）",
-                "旅行で役立つ動詞（A2）",
+                "ホテルチェックインで使える英語（A2）",
+                "職場でよく使う英語フレーズ（B1）",
+                "旅行で役立つ動詞マスター（A2）",
             ],
         },
         "en": {
@@ -652,13 +764,11 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None,
         if not title or len(title) < 4:
             return _fallback_title()
 
-        # 日本語のみ会話ラベル付与＋英語語句の保険置換
+        # 日本語のみ会話ラベル付与（重複防止）
         if title_lang == "ja":
             label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
             if label and label not in title:
                 title = f"{label} {title}"
-            if (audio_lang_for_label or "") != "en":
-                title = re.sub(r"(英語フレーズ|英語表現|英語)", lang_name_ja, title)
 
         return title[:max_len]
     except Exception:
@@ -679,12 +789,11 @@ def make_desc(theme, title_lang: str):
         "es": f"Práctica rápida de vocabulario de {theme_local}. ¡Repite en voz alta! #vocab #aprendizaje",
         "ko": f"{theme_local} 어휘를 빠르게 연습하세요. 소리 내어 따라 말해요! #vocab #learning",
         "id": f"Latihan cepat kosakata {theme_local}. Ucapkan keras-keras! #vocab #belajar",
-        "fr": f"Entraînez-vous rapidement au vocabulaire {theme_local}. Répétez à voix haute ! #vocab #learning",
     }
     return msg.get(title_lang, msg["en"])
 
 # ───────────────────────────────────────────────
-# タグ生成
+# タグ生成（難易度・品詞バッジを追加）
 # ───────────────────────────────────────────────
 def make_tags(theme, audio_lang, subs, title_lang, difficulty=None, pos=None):
     tags = [
@@ -704,11 +813,12 @@ def make_tags(theme, audio_lang, subs, title_lang, difficulty=None, pos=None):
     seen, out = set(), []
     for t in tags:
         if t not in seen:
-            seen.add(t); out.append(t)
+            seen.add(t)
+            out.append(t)
     return out[:15]
 
 # ───────────────────────────────────────────────
-# 単純結合
+# 単純結合（WAV中間・行頭無音・最短尺・行間ギャップ）
 # ───────────────────────────────────────────────
 def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
     combined = AudioSegment.silent(duration=0)
@@ -741,12 +851,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if is_word_list:
         vocab_words = [w.strip() for w in re.split(r"[\n,;]+", raw) if w.strip()]
         theme = "custom list"
-        local_context = ""
+        local_context = ""  # 手入力リスト時は文脈ヒントなし
     else:
+        # spec が来ていればそれを使用
         if isinstance(spec, dict):
             theme = spec.get("theme") or topic
             local_context = (spec.get("context") or context_hint or "")
             vocab_words = _gen_vocab_list_from_spec(spec, audio_lang)
+            # デバッグ: spec を保存（常にOK）
             try:
                 (TEMP / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
@@ -754,7 +866,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         else:
             theme = topic
             vocab_words = _gen_vocab_list(theme, audio_lang, words_count)
-            local_context = context_hint or ""
+            local_context = context_hint or ""  # AUTO時に受け取った文脈を使う
 
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []
@@ -774,34 +886,43 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         tts_line = line
         if audio_lang == "ja":
             if role_idx == 2:
+                # 例文：括弧は読まない + 必ず終止
                 tts_line = _PARENS_JA.sub(" ", tts_line).strip()
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
             else:
+                # 単語行：かな読み＋句点で抑揚安定（ただし1文字語は句点を付けない）
                 if _KANJI_ONLY.fullmatch(line):
                     yomi = _kana_reading(line)
                     if yomi:
                         tts_line = yomi
                 base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
                 tts_line = base + "。" if len(base) >= 2 else base
+
+            # ★ 日本語TTS最適化 正規化（句読点・記号・数字など）
+            tts_line = normalize_ja_for_tts(tts_line)
+            # スタイル分離：例文 = calm / 単語 = neutral
+            style_for_tts = "calm" if role_idx == 2 else "neutral"
+
         else:
+            # 非日本語は例文のみ終止を保証
             if role_idx == 2:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
+            style_for_tts = "neutral"
 
         out_audio = TEMP / f"{i:02d}.wav"
-        style_for_tts = "serious" if audio_lang == "ja" else "neutral"
-
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # 字幕
+        # 字幕（音声言語=原文、他言語=翻訳）→ クリーニングして1行化
         for r, lang in enumerate(subs):
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))
             else:
                 try:
-                    if role_idx in (0, 1):
+                    if role_idx in (0, 1):  # 単語2行は文脈つき1語訳
                         example_ctx = _example_for_index(valid_dialogue, i-1)
+                        # POSヒント：spec優先→日本語のみ簡易推定
                         pos_hint = None
                         if isinstance(spec, dict) and spec.get("pos"):
                             pos_hint = ",".join(spec["pos"])
@@ -809,17 +930,20 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             _k = _guess_ja_pos(line)
                             pos_map = {"verb":"verb", "iadj":"adjective", "naadj":"adjective", "noun":"noun"}
                             pos_hint = pos_map.get(_k, None)
+
                         trans = translate_word_context(
                             word=line, target_lang=lang, src_lang=audio_lang,
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
+                        # 例文行はまず通常翻訳 → ダメなら厳密プロンプトで再翻訳
                         trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
                 except Exception:
                     trans = line
                 sub_rows[r].append(_clean_sub_line(trans, lang))
 
-    # 結合 → 整音 → mp3
+    # 単純結合 → 整音 → mp3
+    # ★ 日本語だけ間と最短尺を別ENVで調整
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
     pre_ms = PRE_SIL_MS_JA if audio_lang == "ja" else PRE_SIL_MS
     min_ms = MIN_UTTER_MS_JA if audio_lang == "ja" else MIN_UTTER_MS
@@ -828,21 +952,29 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # 背景画像
+    # 背景画像（日本語テーマを英語に翻訳して検索）
     bg_png = TEMP / "bg.png"
+
     try:
-        theme_en = translate(theme, "en")
+        theme_en = translate(theme, "en")  # 日本語テーマを英語化
     except Exception:
         theme_en = theme
+
     first_word = valid_dialogue[0][1] if valid_dialogue else theme
 
     def _is_ascii(s: str) -> bool:
         try:
-            s.encode("ascii"); return True
+            s.encode("ascii")
+            return True
         except Exception:
             return False
 
-    query_for_bg = (theme_en or "language learning") if not _is_ascii(first_word or "") else (first_word or theme_en or "learning")
+    # 検索クエリ
+    if not _is_ascii(first_word or ""):
+        query_for_bg = theme_en or "language learning"
+    else:
+        query_for_bg = first_word or theme_en or "learning"
+
     fetch_bg(query_for_bg, bg_png)
     
     # lines.json
@@ -855,7 +987,9 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         lines_data.append(row)
     (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # デバッグ出力
+    # ─────────────────────────
+    # デバッグ出力（常に出力する）
+    # ─────────────────────────
     try:
         (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
         (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
@@ -903,7 +1037,9 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         return
 
     # メタ生成＆アップロード
-    pos_for_title = difficulty_for_title = pattern_for_title = None
+    pos_for_title = None
+    difficulty_for_title = None
+    pattern_for_title = None
     if isinstance(spec, dict):
         pos_for_title = spec.get("pos") or None
         difficulty_for_title = spec.get("difficulty") or None
@@ -916,7 +1052,6 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     desc  = make_desc(theme, title_lang)
     tags  = make_tags(theme, audio_lang, subs, title_lang,
                       difficulty=difficulty_for_title, pos=pos_for_title)
-
     # ─────────────────────────────
     # 改良版アップロード（トークン切れ＆上限対応）
     # ─────────────────────────────
@@ -953,9 +1088,12 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                 logging.info(f"[UPLOAD] ✅ success on account='{acc}'")
                 return True
             except Exception as e:
+                # 上限エラーなら次のアカウントへ
                 if _is_limit_error(e):
                     logging.warning(f"[UPLOAD] ⚠️ limit reached on account='{acc}' → trying next fallback.")
                     continue
+
+                # トークン切れ（expire/revoke）なら即停止＋通知
                 if _is_token_error(e):
                     logging.error(f"[UPLOAD] ❌ TOKEN ERROR on account='{acc}' — expired/revoked/unauthorized.")
                     try:
@@ -966,9 +1104,12 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                     except Exception:
                         pass
                     raise SystemExit(f"[ABORT] Token expired/revoked for account='{acc}'. Please reauthorize.")
+
+                # 想定外のエラーは raise（バグ検出用）
                 logging.exception(f"[UPLOAD] unexpected error on account='{acc}'")
                 raise
 
+        # すべて上限エラー → スキップして次のコンボへ進行
         msg = f"Upload skipped due to per-account limits. tried={tried}"
         logging.warning("[UPLOAD] " + msg)
         try:
@@ -988,6 +1129,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
     isolated = os.getenv("ISOLATED_RUN", "0") == "1"
 
     if isolated:
+        # ここは子プロセス用：従来通りに実行（TARGET_ONLY があれば 1 アカウントのみになる）
         for combo in COMBOS:
             audio_lang  = combo["audio"]
             subs        = combo["subs"]
@@ -1022,6 +1164,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             )
         return
 
+    # ここは親プロセス：各アカウントごとに子プロセスで独立実行
     for combo in COMBOS:
         account = combo.get("account", "default")
         if TARGET_ONLY and account != TARGET_ONLY:
@@ -1038,7 +1181,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             cmd.append("--no-upload")
 
         env = os.environ.copy()
-        env["ISOLATED_RUN"] = "1"
+        env["ISOLATED_RUN"] = "1"   # ← 子プロセス側で再帰起動を止めるためのフラグ
 
         logging.info(f"▶ Spawning isolated run for account={account}: {' '.join(cmd)}")
         subprocess.run(cmd, check=False, env=env)
@@ -1048,14 +1191,16 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     ap = argparse.ArgumentParser()
     ap.add_argument("topic", help="語彙テーマ。AUTO で自動選択。カンマ/改行区切りなら単語リストとして使用")
-    ap.add_argument("--turns", type=int, default=8)
+    ap.add_argument("--turns", type=int, default=8)  # 互換用
     ap.add_argument("--privacy", default="unlisted", choices=["public","unlisted","private"])
     ap.add_argument("--lines-only", action="store_true")
     ap.add_argument("--no-upload", action="store_true")
     ap.add_argument("--chunk", type=int, default=9999, help="Shortsは分割せず1本推奨")
+    # ★ 追加: CLIからアカウントを指定できる
     ap.add_argument("--account", type=str, default="", help="この account のみ実行（combos.yaml の account 値に一致）")
     args = ap.parse_args()
 
+    # ── Account フィルタの決定（CLI > 環境変数） ──
     target_cli = (args.account or "").strip()
     target_env = os.getenv("TARGET_ACCOUNT", "").strip()
     TARGET_ONLY = target_cli or target_env
@@ -1065,6 +1210,7 @@ if __name__ == "__main__":
         if not selected:
             logging.error(f"[ABORT] No combos matched account='{TARGET_ONLY}'. Check combos.yaml.")
             raise SystemExit(2)
+        # in-place 置換（他からも参照されるため）
         COMBOS[:] = selected
         logging.info(f"[ACCOUNT FILTER] Running only for account='{TARGET_ONLY}' ({len(COMBOS)} combo(s)).")
 

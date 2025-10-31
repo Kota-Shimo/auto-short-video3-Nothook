@@ -1,17 +1,17 @@
 # topic_picker.py – vocab専用：機能→シーン→パターンを難易度連動の重みでランダム選択
 import os
 import random
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 rng = random.SystemRandom()
 
 # ========== 定義 ==========
 # 機能（Functional）＝「何をしたいか」の核
-FUNCTIONALS = [
+FUNCTIONALS: List[str] = [
     "greetings & introductions",
     "numbers & prices",
     "time & dates",
-    "asking & giving directions",
+    "asking & giving directions",  # 🧭 道案内（既存を強化）
     "polite requests",
     "offers & suggestions",
     "clarifying & confirming",
@@ -28,10 +28,11 @@ FUNCTIONALS = [
     "cause & reason",
     "condition & advice",
     "small talk starters",
+    "job interviews",              # 🎙️ 面接（新規）
 ]
 
 # シーン（Scene）＝「どこで使うか」
-SCENES_BASE = [
+SCENES_BASE: List[str] = [
     "shopping basics",
     "paying & receipts",
     "returns & exchanges",
@@ -48,6 +49,8 @@ SCENES_BASE = [
     "delivery and online shopping",
     "phone basics",
     "addresses & contact info",
+    "street directions",   # 🧭 道案内（新規）
+    "job interview",       # 🎙️ 面接（新規）
 ]
 
 # Functional → 相性の良い Scene 候補（なければ SCENES_BASE を使う）
@@ -55,7 +58,7 @@ SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "greetings & introductions": ["hotel check-in/out", "small talk at lobby", "phone basics", "restaurant ordering"],
     "numbers & prices": ["shopping basics", "paying & receipts", "transport tickets"],
     "time & dates": ["appointments", "transport tickets", "restaurant ordering"],
-    "asking & giving directions": ["transport tickets", "airport check-in", "hotel check-in/out"],
+    "asking & giving directions": ["street directions", "transport tickets", "airport check-in", "hotel check-in/out"],
     "polite requests": ["restaurant ordering", "hotel check-in/out", "facilities & problems"],
     "offers & suggestions": ["restaurant ordering", "making plans in lobby", "phone basics"],
     "clarifying & confirming": ["paying & receipts", "appointments", "security & boarding"],
@@ -72,6 +75,7 @@ SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "cause & reason": ["returns & exchanges", "facilities & problems"],
     "condition & advice": ["pharmacy basics", "emergencies", "dietary needs"],
     "small talk starters": ["small talk at lobby", "restaurant ordering", "phone basics"],
+    "job interviews": ["job interview", "appointments", "phone basics"],  # 追加
 }
 
 # テーマ文脈（英語）…モデルへの指示用（出力言語とは別）
@@ -80,6 +84,10 @@ def _context_for_theme(functional: str, scene: str) -> str:
     s = (scene or "").lower()
 
     # scene 優先の短文脈
+    if "job interview" in s or "interview" in s:
+        return "A candidate answers simple job interview questions clearly and politely."
+    if "street directions" in s or "direction" in s:
+        return "A person asks for directions and confirms a simple route."
     if "hotel" in s:
         return "A guest talks to the hotel front desk about a simple request."
     if "restaurant" in s:
@@ -110,6 +118,8 @@ def _context_for_theme(functional: str, scene: str) -> str:
         return "Two people exchange addresses or contact information."
 
     # functional による汎用 fallback
+    if "interview" in f:
+        return "A candidate introduces themselves and answers simple interview questions."
     if "greeting" in f or "introductions" in f:
         return "Two people meet for the first time and introduce themselves."
     if "number" in f or "price" in f:
@@ -152,20 +162,30 @@ def _context_for_theme(functional: str, scene: str) -> str:
         return "Two people start light small talk."
     return "A simple everyday situation with polite, practical language."
 
-# pattern 候補と、Functional による重み（難易度も後で掛ける）
-PATTERN_CANDIDATES = [
-    "polite_request", "ask_permission", "ask_availability",
-    "confirm_detail", "make_suggestion", "give_advice",
-    "express_opinion", "express_consequence", ""
+# pattern 候補（学習向けの再利用性重視）
+PATTERN_CANDIDATES: List[str] = [
+    "polite_request",
+    "ask_permission",
+    "ask_availability",
+    "confirm_detail",
+    "make_suggestion",
+    "give_advice",
+    "express_opinion",
+    "express_consequence",
+    "ask_direction",     # 道案内向け
+    "confirm_route",     # 道案内向け
+    "self_introduction", # 面接・自己紹介
+    "talk_experience",   # 面接・過去経験
+    "",
 ]
 
+# Functional/Scene → pattern の重み（学習需要＋自然さ）
 PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
-    # 例：polite requests では polite_request/ask_permission/confirm_detail を重め
     "polite requests": {
         "polite_request": 6, "ask_permission": 4, "confirm_detail": 3, "make_suggestion": 2
     },
     "asking & giving directions": {
-        "ask_availability": 4, "confirm_detail": 4, "give_advice": 2, "polite_request": 2
+        "ask_direction": 6, "confirm_route": 4, "confirm_detail": 3, "polite_request": 2
     },
     "making plans": {
         "make_suggestion": 6, "ask_availability": 3, "confirm_detail": 3, "express_consequence": 2
@@ -173,23 +193,32 @@ PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
     "describing problems": {
         "confirm_detail": 5, "polite_request": 3, "give_advice": 3, "express_consequence": 2
     },
-    "returns & exchanges": {  # scene 側名でも拾えるように後でマージする
-        "confirm_detail": 5, "express_reason": 3 if "express_reason" in PATTERN_CANDIDATES else 0,
-        "polite_request": 4
+    "job interviews": {
+        "self_introduction": 6, "talk_experience": 5, "express_opinion": 3, "confirm_detail": 2
+    },
+    # Scene 名でもヒットさせる（マージ用）
+    "street directions": {
+        "ask_direction": 6, "confirm_route": 4, "confirm_detail": 2
+    },
+    "job interview": {
+        "self_introduction": 6, "talk_experience": 5, "express_opinion": 3
+    },
+    "returns & exchanges": {
+        "confirm_detail": 5, "polite_request": 4, "express_consequence": 2
     },
 }
 
 # 難易度ごとの functional・scene の重み（相対値）
-# A1/A2 は基礎機能・基礎シーンを厚め、B1/B2 は問題解決・議論系を厚め
+# A1/A2 は基礎機能・基礎シーンを厚め、B1/B2 は問題解決・議論系や面接を厚め
 FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A1": {
         "greetings & introductions": 8, "numbers & prices": 7, "time & dates": 6,
-        "polite requests": 5, "asking & giving directions": 5,
+        "polite requests": 5, "asking & giving directions": 6,
         "making plans": 4, "preferences & opinions": 3, "small talk starters": 3,
     },
     "A2": {
         "greetings & introductions": 6, "numbers & prices": 5, "time & dates": 5,
-        "polite requests": 6, "asking & giving directions": 5,
+        "polite requests": 6, "asking & giving directions": 6,
         "making plans": 5, "clarifying & confirming": 4,
         "preferences & opinions": 4, "small talk starters": 4,
         "describing problems": 3, "permission & ability": 3,
@@ -199,39 +228,41 @@ FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
         "condition & advice": 5, "cause & reason": 5,
         "agreeing & disagreeing": 4, "comparisons": 4,
         "past experiences": 3, "future arrangements": 3,
-        "polite requests": 3, "making plans": 3,
+        "polite requests": 3, "making plans": 3, "job interviews": 5,
     },
     "B2": {
         "agreeing & disagreeing": 6, "preferences & opinions": 6,
         "cause & reason": 5, "condition & advice": 5,
         "comparisons": 4, "clarifying & confirming": 4,
-        "describing problems": 4,
+        "describing problems": 4, "job interviews": 6,
     },
 }
 
 SCENE_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A1": {
         "shopping basics": 8, "restaurant ordering": 7, "paying & receipts": 6,
-        "phone basics": 5, "addresses & contact info": 5, "transport tickets": 4,
-        "hotel check-in/out": 4,
+        "phone basics": 5, "addresses & contact info": 5, "transport tickets": 5,
+        "hotel check-in/out": 4, "street directions": 6,
     },
     "A2": {
         "restaurant ordering": 7, "shopping basics": 6, "paying & receipts": 6,
         "appointments": 5, "transport tickets": 5, "hotel check-in/out": 5,
-        "facilities & problems": 4, "pharmacy basics": 4,
+        "facilities & problems": 4, "pharmacy basics": 4, "street directions": 6,
     },
     "B1": {
         "facilities & problems": 6, "returns & exchanges": 6,
         "appointments": 5, "security & boarding": 5,
         "delivery and online shopping": 4, "pharmacy basics": 4,
+        "job interview": 5,
     },
     "B2": {
         "emergencies": 6, "security & boarding": 5,
         "returns & exchanges": 5, "facilities & problems": 5,
-        "delivery and online shopping": 4,
+        "delivery and online shopping": 4, "job interview": 6,
     },
 }
 
+# ========== ユーティリティ ==========
 def _env_level() -> str:
     v = os.getenv("CEFR_LEVEL", "").strip().upper()
     return v if v in ("A1", "A2", "B1", "B2") else "A2"
@@ -256,18 +287,13 @@ def _pick_scene(functional: str) -> str:
     override = os.getenv("SCENE_OVERRIDE", "").strip()
     if override:
         return override
-
     level = _env_level()
     base = SCENES_BY_FUNCTIONAL.get(functional, SCENES_BASE)
-
-    # level 重み
+    # level 重みを適用（未定義は1）
     level_weights = SCENE_WEIGHTS_BY_LEVEL.get(level, {})
     items = _weights_from_dict(base, level_weights)
-
-    # base 内に weight 定義が薄い場合に最低限の重み確保
     if not any(w > 1 for _, w in items):
         items = [(s, 2) for s in base]  # 均等だが少し厚め
-
     return _choose_weighted(items)
 
 def _pick_pattern(functional: str, scene: str) -> str:
@@ -275,62 +301,55 @@ def _pick_pattern(functional: str, scene: str) -> str:
     if override:
         return override
 
-    # functional での重み
-    f_weights = PATTERN_WEIGHTS_BY_FUNCTIONAL.get(functional, {})
-
-    # scene 名が PATTERN_WEIGHTS に居るケースも少しマージ（任意）
-    s_weights = PATTERN_WEIGHTS_BY_FUNCTIONAL.get(scene, {})
-
-    # level による傾向（A1/A2は polite/confirm 系、B1/B2 は advice/opinion/consequence やや厚め）
-    level = _env_level()
-    level_bias = {
-        "A1": {"polite_request": 3, "ask_permission": 2, "confirm_detail": 2},
-        "A2": {"polite_request": 2, "confirm_detail": 2, "ask_availability": 2},
-        "B1": {"give_advice": 3, "make_suggestion": 2, "express_opinion": 2},
-        "B2": {"express_opinion": 3, "express_consequence": 2, "give_advice": 2},
-    }.get(level, {})
-
+    # functional / scene の重みをマージ
     merged: Dict[str, int] = {k: 1 for k in PATTERN_CANDIDATES}
-    for k, w in f_weights.items():
+    for k, w in PATTERN_WEIGHTS_BY_FUNCTIONAL.get(functional, {}).items():
         merged[k] = merged.get(k, 1) + w
-    for k, w in s_weights.items():
+    for k, w in PATTERN_WEIGHTS_BY_FUNCTIONAL.get(scene, {}).items():
         merged[k] = merged.get(k, 1) + w
-    for k, w in level_bias.items():
+
+    # level バイアス（A1/A2 は polite/confirm/directions、B1/B2 は interview/opinion/logic）
+    level = _env_level()
+    level_bias: Dict[str, Dict[str, int]] = {
+        "A1": {"polite_request": 3, "ask_permission": 2, "confirm_detail": 2, "ask_direction": 3, "confirm_route": 2},
+        "A2": {"polite_request": 2, "confirm_detail": 2, "ask_availability": 2, "ask_direction": 3, "confirm_route": 2},
+        "B1": {"give_advice": 3, "make_suggestion": 2, "express_opinion": 2, "self_introduction": 2, "talk_experience": 2},
+        "B2": {"express_opinion": 3, "express_consequence": 2, "give_advice": 2, "self_introduction": 2, "talk_experience": 3},
+    }
+    for k, w in level_bias.get(level, {}).items():
         merged[k] = merged.get(k, 1) + w
 
     items = [(k, merged.get(k, 1)) for k in PATTERN_CANDIDATES]
     return _choose_weighted(items)
 
-def _random_pos_from_env_or_default():
+def _random_pos_from_env_or_default() -> List[str]:
     v = os.getenv("VOCAB_POS", "").strip()
     if v:
         return [x.strip() for x in v.split(",") if x.strip()]
     # POS は main.py 側で言語別に最終決定してもOK。ここでは未指定 or ランダム軽量にしておく
-    return []  # ここは空（＝未指定）にして、main.py 内のロジックに委ねる運用が安全
+    return []
 
-def _random_difficulty():
+def _random_difficulty() -> str:
     env = os.getenv("CEFR_LEVEL", "").strip().upper()
     if env in ("A1", "A2", "B1", "B2"):
         return env
     return rng.choice(["A2", "B1", "B2"])
 
-def _parse_csv_env(name: str):
+def _parse_csv_env(name: str) -> List[str]:
     v = os.getenv(name, "").strip()
     if not v:
         return []
     return [x.strip() for x in v.split(",") if x.strip()]
 
-def _build_spec(functional: str, scene: str, audio_lang: str) -> dict:
-    # テーマは機能＋シーンを併記（タイトル側で自然に短縮される）
+def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, object]:
     theme = f"{functional} – {scene}"
-
     spec = {
         "theme": theme,
         "context": _context_for_theme(functional, scene),
         "count": int(os.getenv("VOCAB_WORDS", "6")),
-        "pos": _random_pos_from_env_or_default(),            # POSはENV優先（未指定なら main.py 側で言語別推定が安全）
-        "relation_mode": os.getenv("RELATION_MODE", "").strip().lower(),  # 未指定なら空
-        "difficulty": _random_difficulty(),                  # ENVが無ければ A2/B1/B2 からランダム
+        "pos": _random_pos_from_env_or_default(),                 # POS は ENV 優先（未指定なら main.py へ委譲）
+        "relation_mode": os.getenv("RELATION_MODE", "").strip().lower(),
+        "difficulty": _random_difficulty(),
         "pattern_hint": _pick_pattern(functional, scene),
         "morphology": _parse_csv_env("MORPHOLOGY"),
     }
@@ -346,15 +365,16 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
     ENV:
       - CEFR_LEVEL=A1/A2/B1/B2 で難易度固定
       - FUNCTIONAL_OVERRIDE / SCENE_OVERRIDE / PATTERN_HINT で強制上書き
-      - THEME_OVERRIDE: theme 文字列を丸ごと上書き（return_context=Falseの互換用途）
+      - THEME_OVERRIDE: theme 文字列を丸ごと上書き（return_context=False の互換用途）
+    戻り値:
+      - return_context=False → "functional – scene"（旧互換）
+      - return_context=True  → dict(spec)
     """
     ct = (content_type or "vocab").lower()
     if ct != "vocab":
         if return_context:
-            # 非 vocab の後方互換
-            theme = "general vocabulary"
             return {
-                "theme": theme,
+                "theme": "general vocabulary",
                 "context": "A simple everyday situation with polite, practical language.",
                 "count": int(os.getenv("VOCAB_WORDS", "6")),
                 "pos": [],
@@ -365,12 +385,10 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
             }
         return "general vocabulary"
 
-    # 互換：THEME_OVERRIDE があればそれだけ返す
     theme_override = os.getenv("THEME_OVERRIDE", "").strip()
     if theme_override and not return_context:
         return theme_override
 
-    # 新方式：functional → scene → pattern
     functional = _pick_functional()
     scene = _pick_scene(functional)
 

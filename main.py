@@ -780,11 +780,11 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []
-for w in vocab_words:
-    diff = (spec.get("difficulty") if isinstance(spec, dict) else None)
-    ex = _gen_example_sentence(w, audio_lang, local_context, difficulty=diff)
-    dialogue.extend([("N", w), ("N", w), ("N", ex)])
-    
+    for w in vocab_words:
+        diff = (spec.get("difficulty") if isinstance(spec, dict) else None)
+        ex = _gen_example_sentence(w, audio_lang, local_context, difficulty=diff)
+        dialogue.extend([("N", w), ("N", w), ("N", ex)])
+
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
     audio_parts, sub_rows = [], [[] for _ in subs]
 
@@ -814,9 +814,7 @@ for w in vocab_words:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
         out_audio = TEMP / f"{i:02d}.wav"
-        # 日本語は語尾安定のため serious
         style_for_tts = "serious" if audio_lang == "ja" else "neutral"
-
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
@@ -829,7 +827,6 @@ for w in vocab_words:
                 try:
                     if role_idx in (0, 1):  # 単語2行は文脈つき1語訳
                         example_ctx = _example_for_index(valid_dialogue, i-1)
-                        # POSヒント：spec優先→日本語のみ簡易推定
                         pos_hint = None
                         if isinstance(spec, dict) and spec.get("pos"):
                             pos_hint = ",".join(spec["pos"])
@@ -850,7 +847,6 @@ for w in vocab_words:
                 sub_rows[r].append(_clean_sub_line(trans, lang))
 
     # 単純結合 → 整音 → mp3
-    # ★ 日本語だけ間と最短尺を別ENVで調整
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
     pre_ms = PRE_SIL_MS_JA if audio_lang == "ja" else PRE_SIL_MS
     min_ms = MIN_UTTER_MS_JA if audio_lang == "ja" else MIN_UTTER_MS
@@ -859,14 +855,12 @@ for w in vocab_words:
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # 背景画像（日本語テーマを英語に翻訳して検索）
+    # 背景画像
     bg_png = TEMP / "bg.png"
-
     try:
-        theme_en = translate(theme, "en")  # 日本語テーマを英語化
+        theme_en = translate(theme, "en")
     except Exception:
         theme_en = theme
-
     first_word = valid_dialogue[0][1] if valid_dialogue else theme
 
     def _is_ascii(s: str) -> bool:
@@ -876,14 +870,9 @@ for w in vocab_words:
         except Exception:
             return False
 
-    # 検索クエリ
-    if not _is_ascii(first_word or ""):
-        query_for_bg = theme_en or "language learning"
-    else:
-        query_for_bg = first_word or theme_en or "learning"
-
+    query_for_bg = theme_en or "language learning" if not _is_ascii(first_word or "") else (first_word or theme_en or "learning")
     fetch_bg(query_for_bg, bg_png)
-    
+
     # lines.json
     lines_data = []
     for i, ((spk, txt), dur) in enumerate(zip(valid_dialogue, new_durs)):
@@ -894,9 +883,7 @@ for w in vocab_words:
         lines_data.append(row)
     (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # ─────────────────────────
-    # デバッグ出力（常に出力する）
-    # ─────────────────────────
+    # デバッグ出力
     try:
         (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
         (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
@@ -948,9 +935,6 @@ for w in vocab_words:
     desc  = make_desc(theme, title_lang)
     tags  = make_tags(theme, audio_lang, subs, title_lang)
 
-    # ─────────────────────────────
-    # 改良版アップロード（トークン切れ＆上限対応）
-    # ─────────────────────────────
     def _is_limit_error(err: Exception) -> bool:
         s = str(err)
         return (
@@ -984,12 +968,9 @@ for w in vocab_words:
                 logging.info(f"[UPLOAD] ✅ success on account='{acc}'")
                 return True
             except Exception as e:
-                # 上限エラーなら次のアカウントへ
                 if _is_limit_error(e):
                     logging.warning(f"[UPLOAD] ⚠️ limit reached on account='{acc}' → trying next fallback.")
                     continue
-
-                # トークン切れ（expire/revoke）なら即停止＋通知
                 if _is_token_error(e):
                     logging.error(f"[UPLOAD] ❌ TOKEN ERROR on account='{acc}' — expired/revoked/unauthorized.")
                     try:
@@ -1000,12 +981,9 @@ for w in vocab_words:
                     except Exception:
                         pass
                     raise SystemExit(f"[ABORT] Token expired/revoked for account='{acc}'. Please reauthorize.")
-
-                # 想定外のエラーは raise（バグ検出用）
                 logging.exception(f"[UPLOAD] unexpected error on account='{acc}'")
                 raise
 
-        # すべて上限エラー → スキップして次のコンボへ進行
         msg = f"Upload skipped due to per-account limits. tried={tried}"
         logging.warning("[UPLOAD] " + msg)
         try:
@@ -1015,7 +993,7 @@ for w in vocab_words:
         return False
 
     _try_upload_with_fallbacks()
-
+    
 # ───────────────────────────────────────────────
 def run_all(topic, turns, privacy, do_upload, chunk_size):
     """

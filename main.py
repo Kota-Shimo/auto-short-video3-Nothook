@@ -552,24 +552,92 @@ def translate_word_context(word: str, target_lang: str, src_lang: str, theme: st
 # メタ生成（タイトル言語に統一）
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
+    """
+    AI長さ制御版タイトル生成：
+      - まず GPT に上限文字を明示して生成（言語別の最大全角/半角を考慮）
+      - 日本語は「◯◯語会話」を先頭に固定（重複回避）
+      - 失敗時は旧来テンプレにフォールバック
+    環境変数:
+      - TITLE_MAX_JA (default 28)
+      - TITLE_MAX_OTHER (default 55)
+    """
+    # ---- 言語 & 上限設定 ----
     if title_lang not in LANG_NAME:
         title_lang = "en"
+    max_len = int(os.getenv("TITLE_MAX_JA", "28")) if title_lang == "ja" else int(os.getenv("TITLE_MAX_OTHER", "55"))
+
+    # ---- テーマをタイトル言語へ（失敗時は原文）----
     try:
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
         theme_local = theme
 
+    # ---- 日本語専用：先頭ラベル（◯◯語会話）を固定化 ----
+    prefix = ""
     if title_lang == "ja":
-        base = f"{theme_local} で使える一言"
-        label = JP_CONV_LABEL.get(audio_lang_for_label or "", "")
-        t = f"{label} {base}" if label and label not in base else base
-        return sanitize_title(t)[:28]
-    else:
-        if title_lang == "en":
-            t = f"{theme_local.capitalize()} vocab in one minute"
+        label = JP_CONV_LABEL.get((audio_lang_for_label or "").strip(), "")
+        if label:
+            prefix = f"{label} "
+
+    # ---- きれいに切る（途中切れや記号で終わらないよう調整）----
+    def _smart_trim(s: str, lim: int) -> str:
+        if len(s) <= lim:
+            return s
+        s = s[:lim]
+        # 末尾が不自然な記号/空白なら除去
+        s = re.sub(r"[ \u3000・、。!！?？:：\-–—]+$", "", s)
+        return s
+
+    # ---- GPTで長さ制御したタイトル生成（失敗時はフォールバック）----
+    try:
+        lang_name = LANG_NAME.get(title_lang, "English")
+        # 日本語は先頭にprefixを含めるよう明示
+        style_hint = "Keep it simple, catchy, and useful for learners. No emojis, no quotes."
+        if title_lang == "ja":
+            style_hint += " Start the title exactly with the given prefix. Keep consistent phrasing."
+
+        prompt = (
+            f"Generate ONE short YouTube title in {lang_name} for a vocabulary-learning short.\n"
+            f"Theme: {theme_local}\n"
+            f"Max characters: {max_len}\n"
+            f"{style_hint}\n"
+        )
+        if prefix:
+            prompt += f"Prefix (must appear at the very beginning): '{prefix}'\n"
+
+        rsp = GPT.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            top_p=0.9,
+        )
+        t = (rsp.choices[0].message.content or "").strip()
+        # クリーニング
+        t = sanitize_title(t)
+
+        # 日本語でprefixが無ければ付与（重複は避ける）
+        if title_lang == "ja" and prefix and not t.startswith(prefix):
+            t = prefix + t
+
+        # 長さ最終調整
+        t = _smart_trim(t, max_len)
+
+        # 最低長の保険
+        if len(t) < 4:
+            raise ValueError("too short")
+        return t
+    except Exception:
+        # ---- フォールバック（旧来）----
+        if title_lang == "ja":
+            base = f"{theme_local} で使える一言"
+            t = (prefix + base) if prefix and not base.startswith(prefix) else base
+            return _smart_trim(sanitize_title(t), max_len)
         else:
-            t = f"{theme_local} vocabulary"
-        return sanitize_title(t)[:55]
+            if title_lang == "en":
+                t = f"{theme_local.capitalize()} vocab in one minute"
+            else:
+                t = f"{theme_local} vocabulary"
+            return _smart_trim(sanitize_title(t), max_len)
 
 def make_desc(theme, title_lang: str):
     if title_lang not in LANG_NAME:

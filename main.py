@@ -780,10 +780,11 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []
-    for w in vocab_words:
-        ex = _gen_example_sentence(w, audio_lang, local_context)
-        dialogue.extend([("N", w), ("N", w), ("N", ex)])
-
+for w in vocab_words:
+    diff = (spec.get("difficulty") if isinstance(spec, dict) else None)
+    ex = _gen_example_sentence(w, audio_lang, local_context, difficulty=diff)
+    dialogue.extend([("N", w), ("N", w), ("N", ex)])
+    
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
     audio_parts, sub_rows = [], [[] for _ in subs]
 

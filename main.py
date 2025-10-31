@@ -355,7 +355,7 @@ def _gen_example_sentence(
         except Exception:
             contains_word = True
 
-        if valid & contains_word:
+        if valid and contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
     # フェールセーフ
@@ -870,8 +870,10 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         except Exception:
             return False
 
-    query_for_bg = theme_en or "language learning" if not _is_ascii(first_word or "") else (first_word or theme_en or "learning")
-    fetch_bg(query_for_bg, bg_png)
+    if not _is_ascii(first_word or ""):
+        query_for_bg = theme_en or "language learning"
+    else:
+        query_for_bg = first_word or theme_en or "learning"
 
     # lines.json
     lines_data = []

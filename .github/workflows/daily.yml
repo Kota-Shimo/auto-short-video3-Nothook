@@ -2,14 +2,18 @@ name: Auto-Vocab-Daily
 
 on:
   schedule:
-    - cron: '0 15 * * *'   # JST00:00
-    - cron: '0 17 * * *'   # JST02:00
-    - cron: '0 19 * * *'   # JST04:00
-    - cron: '0 21 * * *'   # JST06:00
+    - cron: '0 0  * * *'   # JST09:00
     - cron: '0 3  * * *'   # JST12:00
     - cron: '0 6  * * *'   # JST15:00
     - cron: '0 9  * * *'   # JST18:00
     - cron: '0 12 * * *'   # JST21:00
+    - cron: '0 15 * * *'   # JST00:00
+    - cron: '0 18 * * *'   # JST03:00
+    - cron: '0 21 * * *'   # JST06:00
+    - cron: '0 0  * * *'   # JST09:00
+    - cron: '0 3  * * *'   # JST12:00
+    - cron: '0 6  * * *'   # JST15:00
+    - cron: '0 9  * * *'   # JST18:00
   workflow_dispatch:
 
 concurrency:

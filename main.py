@@ -888,9 +888,6 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         "--chunk", str(chunk_size),
         "--rows", str(len(subs)),
         "--out", str(final_mp4),
-        "--center-n",
-        "--size", RENDER_SIZE,
-        "--bg-fit", RENDER_BG_FIT,  # chunk_builder が対応していることが前提
     ]
     logging.info("🔹 chunk_builder cmd: %s", " ".join(cmd))
     subprocess.run(cmd, check=True)

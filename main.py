@@ -7,6 +7,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: topic_picker の文脈ヒント（context）を例文生成に渡して日本語崩れを抑制。
 - 追加: ラングエージルール（厳密モノリンガル・記号/注釈禁止）を例文生成に統合。
 - 追加: 単語2行の字幕は「例文＋テーマ＋品詞ヒント」で1語に確定する文脈訳へ切替。
+- 追加: 日本語の例文行も“かな読み”に変換して読み上げ可能（字幕は原文のまま）。
 """
 
 import argparse, logging, re, json, subprocess, os, sys
@@ -39,6 +40,14 @@ MIN_UTTER_MS = int(os.getenv("MIN_UTTER_MS", "1000"))
 GAP_MS_JA       = int(os.getenv("GAP_MS_JA", str(GAP_MS)))
 PRE_SIL_MS_JA   = int(os.getenv("PRE_SIL_MS_JA", str(PRE_SIL_MS)))
 MIN_UTTER_MS_JA = int(os.getenv("MIN_UTTER_MS_JA", "800"))  # デフォ軽め短縮
+
+# ★ 例文の“かな読み”トグル（new）
+#   off  : かな読みしない（原文のまま）
+#   on   : 常にかな読み
+#   auto : 文長と漢字率で自動（推奨）
+JA_EX_READING = os.getenv("JA_EX_READING", "auto").lower()  # "auto" | "on" | "off"
+JA_EX_READING_KANJI_RATIO = float(os.getenv("JA_EX_READING_KANJI_RATIO", "0.25"))
+JA_EX_READING_MAX_LEN     = int(os.getenv("JA_EX_READING_MAX_LEN", "60"))
 
 # 生成時の温度（必要なら環境変数で上書き）
 EX_TEMP_DEFAULT = float(os.getenv("EX_TEMP", "0.35"))   # 例文
@@ -425,10 +434,11 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     return (words + [w for w in fallback if w not in words])[:n]
 
 # ───────────────────────────────────────────────
-# 日本語TTS用ふりがな
+# 日本語TTS用ふりがな（語・文）
 # ───────────────────────────────────────────────
 _KANJI_ONLY = re.compile(r"^[一-龥々]+$")
 _PARENS_JA  = re.compile(r"\s*[\(\（][^)\）]{1,40}[\)\）]\s*")
+_KANJI_CHAR = re.compile(r"[一-龥々]")
 
 def _kana_reading(word: str) -> str:
     try:
@@ -447,6 +457,40 @@ def _kana_reading(word: str) -> str:
         yomi = (rsp.choices[0].message.content or "").strip()
         yomi = re.sub(r"[^ぁ-ゖゝゞー]+", "", yomi)
         return yomi[:20]
+    except Exception:
+        return ""
+
+def _kanji_ratio(s: str) -> float:
+    t = re.sub(r"[ \t\u3000]", "", s or "")
+    if not t:
+        return 0.0
+    kan = len(_KANJI_CHAR.findall(t))
+    return kan / max(1, len(t))
+
+def _kana_reading_sentence(text: str) -> str:
+    src = (text or "").strip()
+    if not src:
+        return ""
+    try:
+        rsp = GPT.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{
+                "role":"user",
+                "content":(
+                    "次の日本語の文を、そのままの意味で **ひらがなだけ** に直して返してください。"
+                    "句読点（、。！？）はそのまま残してかまいません。"
+                    "カタカナ・漢字・英字・数字・記号は使わないでください。\n\n"
+                    f"文: {src}"
+                )
+            }],
+            temperature=0.0, top_p=1.0,
+        )
+        out = (rsp.choices[0].message.content or "").strip()
+        out = re.sub(r"[^ぁ-ゖゝゞー、。！？\s]+", "", out)
+        out = _normalize_spaces(out)
+        if out and not re.search(r"[。.!?！？]$", out):
+            out += "。"
+        return out
     except Exception:
         return ""
 
@@ -658,9 +702,24 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         tts_line = line
         if audio_lang == "ja":
             if role_idx == 2:
-                tts_line = _PARENS_JA.sub(" ", tts_line).strip()
-                tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
+                # ── 例文（日本語）：かっこ除去＋終止保証＋必要なら“かな読み”に変換 ──
+                base_ex = _PARENS_JA.sub(" ", tts_line).strip()
+                base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
+
+                do_kana = False
+                if JA_EX_READING == "on":
+                    do_kana = True
+                elif JA_EX_READING == "auto":
+                    if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
+                        do_kana = True
+
+                if do_kana:
+                    yomi_ex = _kana_reading_sentence(base_ex)
+                    tts_line = yomi_ex or base_ex
+                else:
+                    tts_line = base_ex
             else:
+                # ── 単語（日本語）：漢字のみ語は“かな読み”、終止付与で抑揚安定 ──
                 if _KANJI_ONLY.fullmatch(line):
                     yomi = _kana_reading(line)
                     if yomi:
@@ -668,6 +727,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                 base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
                 tts_line = base + "。" if len(base) >= 2 else base
         else:
+            # ── 非日本語：例文のみ終止保証 ──
             if role_idx == 2:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
@@ -677,6 +737,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
+        # ── 字幕（原文 or 翻訳） ──
         for r, lang in enumerate(subs):
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))

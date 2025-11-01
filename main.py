@@ -547,14 +547,37 @@ def translate_word_context(word: str, target_lang: str, src_lang: str, theme: st
 # メタ生成（タイトル言語に統一）
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
+    """
+    交互タイトル生成（環境変数不要・実行ごとにトグル）:
+      - トグル=0: 既存クラシック生成（GPT生成）
+      - トグル=1: 固定タグ「約1分」系を付与（各言語対応）
+    トグル状態は TEMP/_title_toggle.txt に保存して毎回反転。
+    """
+    import re
+    from pathlib import Path
+
+    # --- 1分タグ（言語別） ---
+    ONE_MIN_TAG = {
+        "ja": "約1分ボキャブラリー",
+        "en": "~1 min vocabulary",
+        "es": "~1 min vocabulario",
+        "fr": "~1 min vocabulaire",
+        "pt": "~1 min vocabulário",
+        "id": "~1 menit kosakata",
+        "ko": "~1분 어휘",
+    }
+
+    # ---------------- 基本設定 ----------------
     if title_lang not in LANG_NAME:
         title_lang = "en"
     max_len = int(os.getenv("TITLE_MAX_JA", "28")) if title_lang == "ja" else int(os.getenv("TITLE_MAX_OTHER", "55"))
+
     try:
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
         theme_local = theme
 
+    # 日本語ではシリーズラベル（◯◯語会話）を先頭固定
     prefix = ""
     if title_lang == "ja":
         label = JP_CONV_LABEL.get((audio_lang_for_label or "").strip(), "")
@@ -562,49 +585,78 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
             prefix = f"{label} "
 
     def _smart_trim(s: str, lim: int) -> str:
-        if len(s) <= lim: return s
+        if len(s) <= lim:
+            return s
         s = s[:lim]
-        s = re.sub(r"[ \u3000・、。!！?？:：\-–—]+$", "", s)
-        return s
+        # 不自然な末尾記号・空白の除去
+        return re.sub(r"[ \u3000・、。!！?？:：\-–—｜|]+$", "", s)
 
+    # ---------------- トグル読み書き ----------------
+    toggle_file = TEMP / "_title_toggle.txt"
     try:
-        lang_name = LANG_NAME.get(title_lang, "English")
-        style_hint = "Keep it simple, catchy, and useful for learners. No emojis, no quotes."
-        if title_lang == "ja":
-            style_hint += " Start the title exactly with the given prefix. Keep consistent phrasing."
-        prompt = (
-            f"Generate ONE short YouTube title in {lang_name} for a vocabulary-learning short.\n"
-            f"Theme: {theme_local}\n"
-            f"Max characters: {max_len}\n"
-            f"{style_hint}\n"
-        )
-        if prefix:
-            prompt += f"Prefix (must appear at the very beginning): '{prefix}'\n"
-
-        rsp = GPT.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4, top_p=0.9,
-        )
-        t = (rsp.choices[0].message.content or "").strip()
-        t = sanitize_title(t)
-        if title_lang == "ja" and prefix and not t.startswith(prefix):
-            t = prefix + t
-        t = _smart_trim(t, max_len)
-        if len(t) < 4:
-            raise ValueError("too short")
-        return t
+        prev = (toggle_file.read_text(encoding="utf-8").strip() or "0")
+        prev = 1 if prev == "1" else 0
     except Exception:
-        if title_lang == "ja":
-            base = f"{theme_local} で使える一言"
-            t = (prefix + base) if prefix and not base.startswith(prefix) else base
-            return _smart_trim(sanitize_title(t), max_len)
-    if title_lang == "en":
-        t = f"{theme_local.capitalize()} vocab in one minute"
-    else:
-        t = f"{theme_local} vocabulary"
-    return _smart_trim(sanitize_title(t), max_len)
+        prev = 0
+    mode = 1 - prev  # 今回のモード（交互反転）
+    try:
+        toggle_file.write_text(str(mode), encoding="utf-8")
+    except Exception:
+        pass  # 失敗してもタイトル生成は続行
 
+    # ---------------- 1min 固定タイトル ----------------
+    def _fixed_1min() -> str:
+        tag = ONE_MIN_TAG.get(title_lang, "~1 min vocabulary")
+        if title_lang == "ja":
+            t = f"{prefix}{sanitize_title(theme_local)}｜{tag}"
+        else:
+            t = f"{sanitize_title(theme_local)} | {tag}"
+        return _smart_trim(sanitize_title(t), max_len)
+
+    # ---------------- クラシック（GPT生成） ----------------
+    def _classic() -> str:
+        try:
+            lang_name = LANG_NAME.get(title_lang, "English")
+            style_hint = "Keep it simple, catchy, and useful for learners. No emojis, no quotes."
+            if title_lang == "ja":
+                style_hint += " Start the title exactly with the given prefix. Keep consistent phrasing."
+
+            prompt = (
+                f"Generate ONE short YouTube title in {lang_name} for a vocabulary-learning short.\n"
+                f"Theme: {theme_local}\n"
+                f"Max characters: {max_len}\n"
+                f"{style_hint}\n"
+            )
+            if prefix:
+                prompt += f"Prefix (must appear at the very beginning): '{prefix}'\n"
+
+            rsp = GPT.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0, top_p=1.0,
+            )
+            t = (rsp.choices[0].message.content or "").strip()
+            t = sanitize_title(t)
+            if title_lang == "ja" and prefix and not t.startswith(prefix):
+                t = prefix + t
+            t = _smart_trim(t, max_len)
+            if len(t) < 4:
+                raise ValueError("too short")
+            return t
+        except Exception:
+            if title_lang == "ja":
+                base = f"{theme_local} で使える一言"
+                t = (prefix + base) if prefix and not base.startswith(prefix) else base
+                return _smart_trim(sanitize_title(t), max_len)
+            if title_lang == "en":
+                t = f"{theme_local.capitalize()} vocab in one minute"
+            else:
+                t = f"{theme_local} vocabulary"
+            return _smart_trim(sanitize_title(t), max_len)
+
+    # ---------------- 実行（交互切替） ----------------
+    return _fixed_1min() if mode == 1 else _classic()
+    
 def make_desc(theme, title_lang: str):
     if title_lang not in LANG_NAME:
         title_lang = "en"

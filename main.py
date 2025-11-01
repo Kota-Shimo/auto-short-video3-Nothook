@@ -675,19 +675,42 @@ def make_desc(theme, title_lang: str):
     return msg.get(title_lang, msg["en"])
 
 def make_tags(theme, audio_lang, subs, title_lang):
-    tags = [
-        theme, "vocabulary", "language learning", "speaking practice",
-        "listening practice", "subtitles"
-    ]
+    """言語別に最適化された多言語タグを生成"""
+    LOCALIZED_TAGS = {
+        "ja": ["語彙", "単語学習", "リスニング練習", "スピーキング練習", "字幕"],
+        "en": ["vocabulary", "language learning", "speaking practice", "listening practice", "subtitles"],
+        "es": ["vocabulario", "aprendizaje de idiomas", "práctica oral", "práctica auditiva", "subtítulos"],
+        "fr": ["vocabulaire", "apprentissage des langues", "pratique orale", "écoute", "sous-titres"],
+        "pt": ["vocabulário", "aprendizado de idiomas", "prática de fala", "prática auditiva", "legendas"],
+        "id": ["kosakata", "belajar bahasa", "latihan berbicara", "latihan mendengarkan", "subtitle"],
+        "ko": ["어휘", "언어 학습", "말하기 연습", "듣기 연습", "자막"],
+    }
+
+    # ① タイトル言語に合わせたタグセットを選択（なければ英語）
+    base_tags = LOCALIZED_TAGS.get(title_lang, LOCALIZED_TAGS["en"]).copy()
+
+    # ② テーマを追加（翻訳）
+    try:
+        theme_local = theme if title_lang == "en" else translate(theme, title_lang)
+    except Exception:
+        theme_local = theme
+    base_tags.insert(0, theme_local)
+
+    # ③ 字幕言語を追加
     for code in subs:
         if code in LANG_NAME:
-            tags.append(f"{LANG_NAME[code]} subtitles")
+            if title_lang == "ja":
+                base_tags.append(f"{LANG_NAME[code]} 字幕")
+            else:
+                base_tags.append(f"{LANG_NAME[code]} subtitles")
+
+    # ④ 重複除外＋15個制限
     seen, out = set(), []
-    for t in tags:
+    for t in base_tags:
         if t not in seen:
             seen.add(t); out.append(t)
     return out[:15]
-
+    
 # ───────────────────────────────────────────────
 # 単純結合（WAV中間・行頭無音・最短尺・行間ギャップ）
 # ───────────────────────────────────────────────

@@ -558,13 +558,13 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
 
     # --- 1分タグ（言語別） ---
     ONE_MIN_TAG = {
-        "ja": "約1分ボキャブラリー",
-        "en": "~1 min vocabulary",
-        "es": "~1 min vocabulario",
-        "fr": "~1 min vocabulaire",
-        "pt": "~1 min vocabulário",
-        "id": "~1 menit kosakata",
-        "ko": "~1분 어휘",
+        "ja": " 1分学習",
+        "en": " 1 min vocabulary",
+        "es": " 1 min vocabulario",
+        "fr": " 1 min vocabulaire",
+        "pt": " 1 min vocabulário",
+        "id": " 1 menit kosakata",
+        "ko": " 1분 어휘",
     }
 
     # ---------------- 基本設定 ----------------

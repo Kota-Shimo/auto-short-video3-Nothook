@@ -1094,9 +1094,13 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             if topic.strip().upper() == "AUTO_TREND":
                 try:
                     from pathlib import Path
+                    from topic_picker import build_trend_spec  # ★ 新規: トレンド専用specを構築
                     TREND_DIR = TEMP / "trends"
 
+                    # 第二字幕の言語を優先（なければ音声言語）
                     trend_lang = subs[1] if len(subs) > 1 else audio_lang
+
+                    # トレンド候補を取得
                     candidates = get_trend_candidates(
                         audio_lang=trend_lang,
                         cache_dir=TREND_DIR,
@@ -1106,44 +1110,27 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     if not candidates:
                         raise ValueError("no candidates")
 
+                    # UTC日付×言語で日替わり安定選択
                     today = int(dt.datetime.utcnow().strftime("%Y%m%d"))
                     idx = (hash((trend_lang, today)) % len(candidates))
                     picked_topic = candidates[idx]
 
-                    # ここがポイント：トレンド用の“語彙方針”を spec で与える
-                    # - relation_mode='collocation' で話題周りの頻出表現を優先
-                    # - difficulty は環境変数で調整（既定 A2）
-                    # - pattern_hint は言語ごとに日常的な言い回しを提示（単語抽出の重みづけ）
-                    # --- ここは既存の picked_topic 決定のすぐ下に置く（collocationだった所を置き換え） ---
-                    trend_patterns = {
-                        "ja": "〜について, 〜に行く, 〜を見る, 予定, チケット, 混雑, 会場, 何時, どこ, 意見",
-                        "en": "talk about, go to, watch, read about, plan to, tickets, schedule, where, when, opinion",
-                        "es": "hablar de, ir a, ver, entradas, horario, dónde, cuándo, opinión",
-                        "fr": "parler de, aller à, regarder, billets, horaires, où, quand, avis",
-                        "pt": "falar sobre, ir a, assistir, ingressos, horário, onde, quando, opinião",
-                        "id": "bicara tentang, pergi ke, menonton, tiket, jadwal, di mana, kapan, pendapat",
-                        "ko": "이야기하다, 가다, 보다, 티켓, 일정, 어디, 언제, 의견",
-                    }
-                    
-                    spec_for_run = {
-                        "theme": picked_topic,
-                        # ← 例文で「トレンド時だけ」振る舞いを変えるために [TREND] を埋め込む
-                        "context": _make_trend_context(picked_topic, audio_lang) + " [TREND]",
-                        "relation_mode": "contextual",  # ★ collocation → contextual
-                        "difficulty": os.getenv("TREND_DIFFICULTY", "B1"),  # ★ 既定B1（必要なら環境変数でA2/B2に）
-                        "pos": ["noun", "verb", "adjective"],
-                        "pattern_hint": trend_patterns.get(audio_lang, trend_patterns.get("en", "")),
-                        "trend": True,  # ★ トレンドフラグ（後続の判定に使わないなら無くてもOK）
-                    }
-                    context_hint = spec_for_run["context"]
+                    # ★ トレンド用：関連語を多く出す spec を生成
+                    spec_for_run = build_trend_spec(
+                        theme=picked_topic,
+                        audio_lang=audio_lang,
+                        count=int(os.getenv("VOCAB_WORDS", "6")),
+                    )
+                    context_hint = spec_for_run.get("context", "")
+
                     logging.info(
-                        f"[TREND] lang={trend_lang} → picked='{picked_topic}' "
-                        f"(#{idx+1}/{len(candidates)}) | context for {audio_lang} set."
+                        f"[TREND] trend_lang={trend_lang} → picked='{picked_topic}' "
+                        f"(#{idx+1}/{len(candidates)})"
                     )
 
-                    # デバッグ出力（任意）
+                    # デバッグ保存（任意）
                     try:
-                        (TREND_DIR).mkdir(parents=True, exist_ok=True)
+                        TREND_DIR.mkdir(parents=True, exist_ok=True)
                         with open(TREND_DIR / f"picked_{trend_lang}.txt", "w", encoding="utf-8") as f:
                             f.write("picked: " + picked_topic + "\n\n")
                             f.write("\n".join(candidates[:20]))
@@ -1154,7 +1141,6 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     logging.warning(f"[TREND] failed ({e}) → fallback to AUTO.")
                     topic = "AUTO"
                     
-        
             if topic.strip().lower() == "auto":
                 try:
                     picked_raw = pick_by_content_type("vocab", audio_lang, return_context=True)

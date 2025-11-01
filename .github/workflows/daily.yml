@@ -3,12 +3,12 @@ name: Auto-Vocab-Daily
 on:
   schedule:
     - cron: '0 0  * * *'   # JST09:00 → 通常
-    #- cron: '0 1  * * *'   # JST10:00 → ★トレンド
+    - cron: '0 1  * * *'   # JST10:00 → ★トレンド
     - cron: '0 3  * * *'   # JST12:00 → 通常
     - cron: '0 6  * * *'   # JST15:00 → 通常
     - cron: '0 9  * * *'   # JST18:00 → 通常
     - cron: '0 12 * * *'   # JST21:00 → 通常
-    #- cron: '0 13 * * *'   # JST22:00 → ★トレンド
+    - cron: '0 13 * * *'   # JST22:00 → ★トレンド
     - cron: '0 15 * * *'   # JST00:00 → 通常
     - cron: '0 18 * * *'   # JST03:00 → 通常
     - cron: '0 21 * * *'   # JST06:00 → 通常

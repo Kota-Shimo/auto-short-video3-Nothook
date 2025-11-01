@@ -28,7 +28,8 @@ from thumbnail      import make_thumbnail
 from upload_youtube import upload
 from topic_picker   import pick_by_content_type
 # ★ トレンド取得モジュール（Google News RSS）
-from trend_fetcher  import fetch_trending_topics
+from trend_fetcher  import get_trend_candidates
+import datetime as dt   # ← 無ければこの1行を追加（UTC日付で安定選択に使う）
 
 # ───────────────────────────────────────────────
 GPT = OpenAI()

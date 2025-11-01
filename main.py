@@ -286,7 +286,9 @@ def _gen_example_sentence(
     elif diff == "B1": local_temp = 0.28
     elif diff == "B2": local_temp = 0.32
     else:              local_temp = _example_temp_for(lang_code)
-
+    if "[TREND]" in (ctx or ""):
+         local_temp = min(local_temp + 0.05, 0.40)  # ほんのり多様化
+    
     for _ in range(5):
         try:
             rsp = GPT.chat.completions.create(
@@ -401,10 +403,16 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         lines.append("Avoid rare proper nouns; prefer reusable words useful when discussing the theme (plans, tickets, time, place, opinions).")
     elif rel == "pattern":
         lines.append("Prefer short reusable patterns or set phrases.")
+    elif rel == "contextual":
+        # ★★ トレンド話題を会話で語る時に実際に口にする語を優先
+        lines.append("Focus on words useful in natural conversation about this topic: opinions, reasons, actions, feelings, plans, tickets, time, place.")
+        lines.append("Avoid rare proper nouns unless globally known; prefer mid-frequency, reusable words over ultra-basic A1 terms.")
     if patt:
         lines.append(f"Pattern focus hint: {patt}.")
     if morph:
         lines.append("If natural, include related morphological family: " + ", ".join(morph) + ".")
+    if spec.get("trend"):
+        lines.append("Prefer B1–B2 everyday conversation words (not A1 basics); skip articles and function words.")
     if diff in ("A1","A2","B1"):
         lines.append(f"Target approximate CEFR level: {diff}. Keep words short and common for this level.")
     lines.append("Return ONLY one word or short hyphenated term per line, no numbering, no punctuation.")
@@ -1106,6 +1114,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     # - relation_mode='collocation' で話題周りの頻出表現を優先
                     # - difficulty は環境変数で調整（既定 A2）
                     # - pattern_hint は言語ごとに日常的な言い回しを提示（単語抽出の重みづけ）
+                    # --- ここは既存の picked_topic 決定のすぐ下に置く（collocationだった所を置き換え） ---
                     trend_patterns = {
                         "ja": "〜について, 〜に行く, 〜を見る, 予定, チケット, 混雑, 会場, 何時, どこ, 意見",
                         "en": "talk about, go to, watch, read about, plan to, tickets, schedule, where, when, opinion",
@@ -1115,19 +1124,18 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                         "id": "bicara tentang, pergi ke, menonton, tiket, jadwal, di mana, kapan, pendapat",
                         "ko": "이야기하다, 가다, 보다, 티켓, 일정, 어디, 언제, 의견",
                     }
+                    
                     spec_for_run = {
                         "theme": picked_topic,
-                        "context": _make_trend_context(picked_topic, audio_lang),
-                        "relation_mode": "collocation",
-                        "difficulty": os.getenv("TREND_DIFFICULTY", "A2"),
+                        # ← 例文で「トレンド時だけ」振る舞いを変えるために [TREND] を埋め込む
+                        "context": _make_trend_context(picked_topic, audio_lang) + " [TREND]",
+                        "relation_mode": "contextual",  # ★ collocation → contextual
+                        "difficulty": os.getenv("TREND_DIFFICULTY", "B1"),  # ★ 既定B1（必要なら環境変数でA2/B2に）
                         "pos": ["noun", "verb", "adjective"],
                         "pattern_hint": trend_patterns.get(audio_lang, trend_patterns.get("en", "")),
-                        # count は _normalize_spec 側で環境変数を継承
+                        "trend": True,  # ★ トレンドフラグ（後続の判定に使わないなら無くてもOK）
                     }
-
-                    # 例文生成側にも“会話の文脈”として渡す
                     context_hint = spec_for_run["context"]
-
                     logging.info(
                         f"[TREND] lang={trend_lang} → picked='{picked_topic}' "
                         f"(#{idx+1}/{len(candidates)}) | context for {audio_lang} set."

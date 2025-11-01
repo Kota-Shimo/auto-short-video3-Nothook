@@ -1033,28 +1033,41 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             words_env_count = int(os.getenv("VOCAB_WORDS", "6"))
 
             # ★ 追加: AUTO_TREND の処理を先に実行
-            # ★ 追加: AUTO_TREND の処理を先に実行（get_trend_candidates 版）
+            # ★ 追加: AUTO_TREND の処理を先に実行（第二字幕の国を優先）
             if topic.strip().upper() == "AUTO_TREND":
                 try:
-                    # 候補をまとめて取得（RSS / Wikipedia のミックス、60分キャッシュ）
                     from pathlib import Path
                     TREND_DIR = TEMP / "trends"
+
+                    # ◎ トレンド取得は第二字幕の言語を優先、なければ音声言語
+                    trend_lang = subs[1] if len(subs) > 1 else audio_lang
+
                     candidates = get_trend_candidates(
-                        audio_lang=audio_lang,
+                        audio_lang=trend_lang,
                         cache_dir=TREND_DIR,
                         limit=30,
                         cache_ttl_minutes=60,
                     )
-            
                     if not candidates:
                         raise ValueError("no candidates")
-            
-                    # 安定選択（“UTC日付×言語”で毎回同じインデックス）
+
+                    # ◎ 安定選択（UTC日付×trend_langで日替わり固定）
                     today = int(dt.datetime.utcnow().strftime("%Y%m%d"))
-                    idx = (hash((audio_lang, today)) % len(candidates))
+                    idx = (hash((trend_lang, today)) % len(candidates))
                     picked_topic = candidates[idx]
-            
-                    logging.info(f"[TREND] {audio_lang}: picked='{picked_topic}' (#{idx+1}/{len(candidates)})")
+
+                    logging.info(f"[TREND] trend_lang={trend_lang} → picked='{picked_topic}' "
+                                 f"(#{idx+1}/{len(candidates)})")
+
+                    # --- 任意：確認用に一部をファイル出力（デバッグ）
+                    try:
+                        (TREND_DIR).mkdir(parents=True, exist_ok=True)
+                        with open(TREND_DIR / f"picked_{trend_lang}.txt", "w", encoding="utf-8") as f:
+                            f.write("picked: " + picked_topic + "\n\n")
+                            f.write("\n".join(candidates[:20]))
+                    except Exception:
+                        pass
+
                 except Exception as e:
                     logging.warning(f"[TREND] failed ({e}) → fallback to AUTO.")
                     topic = "AUTO"

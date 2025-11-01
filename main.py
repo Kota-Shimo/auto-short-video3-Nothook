@@ -1033,18 +1033,32 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             words_env_count = int(os.getenv("VOCAB_WORDS", "6"))
 
             # ★ 追加: AUTO_TREND の処理を先に実行
+            # ★ 追加: AUTO_TREND の処理を先に実行（get_trend_candidates 版）
             if topic.strip().upper() == "AUTO_TREND":
                 try:
-                    trend = fetch_trending_topics(audio_lang)
-                    if trend:
-                        picked_topic = trend
-                        logging.info(f"[TREND] Using trending topic for {audio_lang}: {trend}")
-                    else:
-                        raise ValueError("no trend")
+                    # 候補をまとめて取得（RSS / Wikipedia のミックス、60分キャッシュ）
+                    from pathlib import Path
+                    TREND_DIR = TEMP / "trends"
+                    candidates = get_trend_candidates(
+                        audio_lang=audio_lang,
+                        cache_dir=TREND_DIR,
+                        limit=30,
+                        cache_ttl_minutes=60,
+                    )
+            
+                    if not candidates:
+                        raise ValueError("no candidates")
+            
+                    # 安定選択（“UTC日付×言語”で毎回同じインデックス）
+                    today = int(dt.datetime.utcnow().strftime("%Y%m%d"))
+                    idx = (hash((audio_lang, today)) % len(candidates))
+                    picked_topic = candidates[idx]
+            
+                    logging.info(f"[TREND] {audio_lang}: picked='{picked_topic}' (#{idx+1}/{len(candidates)})")
                 except Exception as e:
                     logging.warning(f"[TREND] failed ({e}) → fallback to AUTO.")
                     topic = "AUTO"
-
+        
             if topic.strip().lower() == "auto":
                 try:
                     picked_raw = pick_by_content_type("vocab", audio_lang, return_context=True)

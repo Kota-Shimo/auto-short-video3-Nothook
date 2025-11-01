@@ -1,4 +1,3 @@
-# trend_fetcher.py
 """
 学習言語ごとのトレンド候補を取得して、学習向きの短い“テーマ語”に正規化して返す。
 - ソース: Google News RSS（国・言語別）/ Wikipedia Pageviews（昨日の急上昇）
@@ -84,6 +83,10 @@ def _looks_term_like(s: str, lang: str) -> bool:
     lowers = set(re.findall(r"[a-z]+", s.lower()))
     if lowers and lowers.issubset(STOPWORDS.get(lang, set())): return False
     s2 = re.split(r"\s[:-]\s", s)[0].strip()
+    # 一般語すぎるテーマの除外
+    generic_words = {"restaurant", "news", "update", "event", "sports", "music", "fashion", "time", "date"}
+    if s.lower() in generic_words:
+        return False
     return bool(s2)
 
 def _shorten(s: str, lang: str) -> str:
@@ -239,3 +242,29 @@ def get_trend_candidates(
     out = merged[:limit]
     _save_cache(cache_path, out)
     return out
+
+
+# --- ここから末尾に追記 ---------------------------------
+__all__ = ["get_trend_candidates", "fetch_trending_topics"]
+
+def fetch_trending_topics(audio_lang: str, limit: int = 1, cache_ttl_minutes: int = 60):
+    """
+    main.py が期待しているラッパー。
+    - 既定では 1 件の“テーマ語”を返す（文字列）
+    - limit>1 を渡すと候補リストを返す（list[str]）
+    """
+    from pathlib import Path
+    try:
+        from config import TEMP  # 既存 temp ディレクトリ
+        cache_dir = TEMP
+    except Exception:
+        cache_dir = Path("temp")
+
+    items = get_trend_candidates(
+        audio_lang=audio_lang,
+        cache_dir=cache_dir,
+        limit=max(1, limit),
+        cache_ttl_minutes=cache_ttl_minutes,
+    )
+    return items[0] if limit == 1 else items
+# --- 追記ここまで ---------------------------------------

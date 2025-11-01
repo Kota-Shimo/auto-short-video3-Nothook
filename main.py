@@ -251,7 +251,13 @@ def _gen_example_sentence(
     if diff not in ("A1", "A2", "B1", "B2"):
         diff = ""
 
+    # ーー トレンド判定（context_hint に [TREND] が入る仕様）ーー
+    is_trend = "[TREND]" in ctx
+
+    # ーー ルール文字列（そのまま）ーー
     rules = _lang_rules(lang_code)
+
+    # ーー CEFR 説明は既存通り ーー
     cefr_guides = {
         "A1": ("Use very simple, high-frequency words. Present tense. One clause only. No subclauses, no passive, no numbers or dates. Keep it short and concrete."),
         "A2": ("Use common everyday words. Prefer present or simple past. One short clause (or two joined by 'and' at most). Avoid complex relative clauses or conditionals."),
@@ -261,12 +267,13 @@ def _gen_example_sentence(
     }
     cefr_line = cefr_guides.get(diff, "")
 
+    # ーー Prompt: 「与えた token をそのまま含める」指示を明記 ーー
     system = {"role":"system","content":"You write exactly ONE natural sentence. No lists, no quotes, no emojis, no URLs. Keep it monolingual."}
 
     if lang_code == "ja":
         user = (
-            f"{rules} 単語「{word}」を必ず含めて、日本語で自然な一文をちょうど1つだけ書いてください。"
-            "日常の簡単な状況を想定し、助詞の使い方を自然にしてください。かっこ書きや翻訳注釈は不要です。"
+            f"{rules} 単語「{word}」を**その表記のまま**必ず含めて、日本語で自然な一文をちょうど1つだけ書いてください。"
+            "かっこ書きや翻訳注釈は不要です。引用符・スラッシュ等のASCII記号は使わないでください。"
         )
         if ctx: user += f" シーンの文脈: {ctx}"
         if cefr_line:
@@ -277,19 +284,52 @@ def _gen_example_sentence(
                 "B2": "自然で正確に。専門的すぎる語は避ける。"
             }[diff]
     else:
-        user = f"{rules} Write exactly ONE short, natural sentence in {lang_name} that uses the word: {word}. Return ONLY the sentence."
+        user = (
+            f"{rules} Write exactly ONE short, natural sentence in {lang_name} that uses the token **{word}** verbatim."
+            " Do not add quotes, brackets, or slashes. Return ONLY the sentence."
+        )
         if ctx: user += f" Scene hint: {ctx}"
         if cefr_line: user += f" CEFR level: {diff}. {cefr_line}"
 
-    if   diff == "A1": local_temp = 0.10
-    elif diff == "A2": local_temp = 0.18 if lang_code == "ja" else 0.22
-    elif diff == "B1": local_temp = 0.28
-    elif diff == "B2": local_temp = 0.32
-    else:              local_temp = _example_temp_for(lang_code)
-    if "[TREND]" in (ctx or ""):
-         local_temp = min(local_temp + 0.05, 0.40)  # ほんのり多様化
-    
-    for _ in range(5):
+    # ーー 温度：トレンドは少し下げて安定度UP ーー
+    if   diff == "A1": base_temp = 0.10
+    elif diff == "A2": base_temp = 0.18 if lang_code == "ja" else 0.22
+    elif diff == "B1": base_temp = 0.28
+    elif diff == "B2": base_temp = 0.32
+    else:              base_temp = _example_temp_for(lang_code)
+    local_temp = max(0.05, base_temp - 0.05) if is_trend else base_temp
+
+    # ーー 長さ制約：トレンドは少し緩め ーー
+    def _fits_len_trendaware(text: str) -> bool:
+        if lang_code in ("ja","ko","zh"):
+            limit = 34 if is_trend else 30
+            return len(text or "") <= limit
+        else:
+            words = re.findall(r"\b\w+\b", text or "")
+            limit = 14 if is_trend else 12
+            return len(words) <= limit
+
+    # ーー CJK の「含む」判定を活用語形に少し寛容化 ーー
+    def _contains_token_trendaware(surface: str, sent: str) -> bool:
+        try:
+            if lang_code in ("ja","ko","zh"):
+                if surface in sent:
+                    return True
+                # ざっくり活用許容（日本語の終止・連用・語尾一字落とし）
+                if lang_code == "ja" and len(surface) >= 2:
+                    stem = re.sub(r"[ますでしただたいないよううくぐすつぬむぶるたてでん]?$", "", surface)
+                    if stem and stem in sent:
+                        return True
+                return False
+            # 非CJKは小文字包含でOK
+            return surface.lower() in (sent or "").lower()
+        except Exception:
+            return True
+
+    # ーー 試行回数：トレンドは +2 回 ーー
+    tries = 7 if is_trend else 5
+
+    for _ in range(tries):
         try:
             rsp = GPT.chat.completions.create(
                 model="gpt-4o-mini",
@@ -301,14 +341,12 @@ def _gen_example_sentence(
         except Exception:
             raw = ""
         cand = _clean_strict(raw)
-        valid = bool(cand) and _is_single_sentence(cand) and _fits_length(cand, lang_code)
-        try:
-            contains_word = (word.lower() in cand.lower()) if lang_code not in ("ja","ko","zh") else (word in cand)
-        except Exception:
-            contains_word = True
+        valid = bool(cand) and _is_single_sentence(cand) and _fits_len_trendaware(cand)
+        contains_word = _contains_token_trendaware(word, cand)
         if valid and contains_word:
             return _ensure_period_for_sentence(cand, lang_code)
 
+    # フォールバック（既存ロジックそのまま）
     if lang_code == "ja":
         return _ja_template_fallback(word)
     elif lang_code == "es":
@@ -323,14 +361,50 @@ def _gen_example_sentence(
         return _ensure_period_for_sentence(f"{word}를 연습해 봅시다", lang_code)
     else:
         return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
+        
+def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
+    n   = int(spec.get("count", int(os.getenv("VOCAB_WORDS", "6"))))
+    th  = spec.get("theme") or "general vocabulary"
+    pos = spec.get("pos") or []
+    rel = (spec.get("relation_mode") or "").strip().lower()
+    diff = (spec.get("difficulty") or "").strip().upper()
+    patt = (spec.get("pattern_hint") or "").strip()
+    morph = spec.get("morphology") or []
+    is_trend = bool(spec.get("trend"))
 
-def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
-    theme_for_prompt = translate(theme, lang_code) if lang_code != "en" else theme
-    prompt = (
-        f"List {n} essential single or hyphenated words for {theme_for_prompt} context "
-        f"in {LANG_NAME.get(lang_code,'English')}. Return ONLY one word per line, no numbering."
-    )
-    prompt += f"\nAll words must be written in {LANG_NAME.get(lang_code,'the target')} language."
+    theme_for_prompt = translate(th, lang_code) if lang_code != "en" else th
+
+    lines = []
+    lines.append(f"You are selecting {n} HIGH-FREQUENCY words for the topic: {theme_for_prompt}.")
+    if pos: lines.append("Restrict part-of-speech to: " + ", ".join(pos) + ".")
+    if rel == "synonym":
+        lines.append("Prefer synonyms or near-synonyms around the central topic.")
+    elif rel == "antonym":
+        lines.append("Include at least one meaningful antonym pair if possible.")
+    elif rel == "collocation":
+        lines.append("Prefer common collocations used with the topic in everyday speech.")
+    elif rel == "pattern":
+        lines.append("Prefer short reusable patterns or set phrases.")
+    elif rel == "contextual":
+        lines.append("Focus on words useful in natural conversation about this topic: opinions, reasons, actions, feelings, plans, tickets, time, place.")
+        lines.append("Avoid rare proper nouns; prefer reusable mid-frequency conversation words.")
+
+    if patt:
+        lines.append(f"Pattern focus hint: {patt}.")
+    if morph:
+        lines.append("If natural, include related morphological family: " + ", ".join(morph) + ".")
+    if is_trend:
+        # ★ トレンド時の禁止事項を明記
+        lines.append("Do NOT include names of people, teams, brands, hashtags, usernames, or titles of works.")
+        lines.append("Avoid multi-word proper nouns and words that require capitalization in general use.")
+        lines.append("Prefer single tokens that can be used in everyday sentences about the topic.")
+
+    if diff in ("A1","A2","B1"):
+        lines.append(f"Target approximate CEFR level: {diff}. Keep words short and common for this level.")
+
+    lines.append("Return ONLY one word or short hyphenated term per line, no numbering, no punctuation.")
+    lines.append(f"All words must be written in {LANG_NAME.get(lang_code,'the target')} language.")
+    prompt = "\n".join(lines)
 
     content = ""
     try:
@@ -350,15 +424,27 @@ def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
         if not w: continue
         w = re.sub(r"^\d+[\).]?\s*", "", w)
         w = re.sub(r"[，、。.!?！？]+$", "", w)
+        # 先頭トークンだけ拾う（従来どおり）だが…
         w = w.split()[0]
-        if w and w not in words:
+        if not w:
+            continue
+
+        # ★ トレンド時の簡易フィルタ
+        if is_trend:
+            if re.search(r"[#@/0-9]", w):
+                continue
+            if lang_code == "en" and len(w) >= 2 and w[0].isupper() and w[1:].islower():
+                # 英語で先頭大文字＝固有名詞っぽいのは弾く（一般名詞は通常小文字）
+                continue
+
+        if w not in words:
             words.append(w)
 
     if len(words) >= n:
         return words[:n]
     fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
-    return fallback[:n]
-
+    return (words + [w for w in fallback if w not in words])[:n]
+    
 # ───────────────────────────────────────────────
 # ★ spec 正規化＋spec対応の語彙生成
 # ───────────────────────────────────────────────

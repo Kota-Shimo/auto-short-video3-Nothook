@@ -1,4 +1,5 @@
 # topic_picker.py – vocab専用：機能→シーン→パターンを難易度連動の重みでランダム選択
+# 追加: トレンド専用 spec を生成する build_trend_spec() / pick_by_content_type(..., content_type="vocab_trend")
 import os
 import random
 from typing import List, Tuple, Dict, Optional
@@ -355,6 +356,66 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
     }
     return spec
 
+# ========== トレンド専用: 関連語を“強く”引かせる spec ==========
+def _trend_pattern_hint(audio_lang: str) -> str:
+    """
+    topic に固有の “役職/ポジション/機材/動作/イベント/会場/ルール/スコア・時間”
+    といった『話題に特化した語』を優先させるための軽い誘導語。
+    """
+    common = "roles, positions, equipment, actions, events, venues, rules, scores or times"
+    lang = (audio_lang or "").lower()
+    if lang == "ja":
+        return "役職・ポジション・道具・動作・イベント名・会場・ルール・得点や時間"
+    if lang == "es":
+        return "roles, posiciones, equipo, acciones, eventos, sedes, reglas, puntuaciones y horarios"
+    if lang == "fr":
+        return "rôles, postes, équipement, actions, événements, lieux, règles, scores et horaires"
+    if lang == "pt":
+        return "funções, posições, equipamentos, ações, eventos, locais, regras, pontuações e horários"
+    if lang == "id":
+        return "peran, posisi, peralatan, aksi, acara, tempat, aturan, skor dan waktu"
+    if lang == "ko":
+        return "역할, 포지션, 장비, 동작, 이벤트, 장소, 규칙, 점수와 시간"
+    return common
+
+def _trend_context(theme: str, audio_lang: str) -> str:
+    """
+    例文生成にも効きやすい短い英語文脈（生成モデルへの指示用）。
+    出力言語は main.py 側で制御するため、ここは英語ベースでOK。
+    """
+    t = (theme or "").strip()
+    if not t:
+        t = "the current popular topic"
+    return (
+        f"Talk about '{t}' with topic-specific vocabulary: roles/positions, key actions, objects/equipment, "
+        f"venues/stadiums, rules, scores/times. Keep it practical."
+    )
+
+def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None) -> Dict[str, object]:
+    """
+    トレンド話題に“関連する用語”を多めに引くための spec を生成。
+    - relation_mode: 'trend_related'（main.py 側の _gen_vocab_list_from_spec が解釈）
+    - pos: noun/verb/adjective を優先（品詞が偏らないように）
+    - difficulty: TREND_DIFFICULTY（未設定なら B1）
+    - pattern_hint: 言語別の誘導語（役職/動作/道具/会場など）
+    """
+    n = int(count or os.getenv("VOCAB_WORDS", "6"))
+    level = os.getenv("TREND_DIFFICULTY", "B1").strip().upper()
+    if level not in ("A1", "A2", "B1", "B2"):
+        level = "B1"
+    spec: Dict[str, object] = {
+        "theme": theme,
+        "context": _trend_context(theme, audio_lang),
+        "count": n,
+        "pos": ["noun", "verb", "adjective"],
+        "relation_mode": "trend_related",     # ★ ここが肝
+        "difficulty": level,
+        "pattern_hint": _trend_pattern_hint(audio_lang),
+        "morphology": [],                     # 必要なら ENV で main と同様に拡張可
+        "trend": True,
+    }
+    return spec
+
 # ========== 外部API ==========
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
     """
@@ -366,11 +427,26 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
       - CEFR_LEVEL=A1/A2/B1/B2 で難易度固定
       - FUNCTIONAL_OVERRIDE / SCENE_OVERRIDE / PATTERN_HINT で強制上書き
       - THEME_OVERRIDE: theme 文字列を丸ごと上書き（return_context=False の互換用途）
+
+    追加:
+      - content_type="vocab_trend" または "trend" のとき:
+        THEME_OVERRIDE があればそれをテーマとして build_trend_spec を返す（return_context=True 推奨）。
+        return_context=False の場合はテーマ文字列のみ返す。
     戻り値:
-      - return_context=False → "functional – scene"（旧互換）
+      - return_context=False → "functional – scene" もしくは THEME（trend時）
       - return_context=True  → dict(spec)
     """
     ct = (content_type or "vocab").lower()
+
+    # ---- トレンド専用モード ----
+    if ct in ("vocab_trend", "trend"):
+        theme_override = os.getenv("THEME_OVERRIDE", "").strip()
+        theme = theme_override if theme_override else "popular topic"
+        if return_context:
+            return build_trend_spec(theme, audio_lang)
+        return theme
+
+    # ---- 既存の vocab モード ----
     if ct != "vocab":
         if return_context:
             return {
@@ -401,3 +477,5 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
 if __name__ == "__main__":
     print(pick_by_content_type("vocab", "en"))
     print(pick_by_content_type("vocab", "en", return_context=True))
+    print(pick_by_content_type("vocab_trend", "en"))
+    print(pick_by_content_type("vocab_trend", "en", return_context=True))

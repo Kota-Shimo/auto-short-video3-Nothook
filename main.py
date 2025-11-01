@@ -397,6 +397,8 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         lines.append("Include at least one meaningful antonym pair if possible.")
     elif rel == "collocation":
         lines.append("Prefer common collocations used with the topic in everyday speech.")
+        # ★ 追加：トレンド話題でも使い回せる“会話用”語に寄せる
+        lines.append("Avoid rare proper nouns; prefer reusable words useful when discussing the theme (plans, tickets, time, place, opinions).")
     elif rel == "pattern":
         lines.append("Prefer short reusable patterns or set phrases.")
     if patt:
@@ -676,6 +678,52 @@ def make_desc(theme, title_lang: str):
         "id": f"Latihan cepat kosakata {theme_local}. Ucapkan keras-keras! #vocab #belajar",
     }
     return msg.get(title_lang, msg["en"])
+
+def _make_trend_context(theme: str, lang_code: str) -> str:
+    """
+    例文生成や単語選定のヒントに使う“会話の文脈”をトレンド用に作る。
+    テーマ名を連呼しすぎないよう、日常会話の目的語・話題化を想定。
+    """
+    theme = (theme or "").strip()
+    if not theme:
+        return ""
+
+    if lang_code == "ja":
+        return (
+            f"今この話題（{theme}）について友達と雑談。予定や感想、場所や時間、チケット、混雑、"
+            "ニュースで見た内容などを自然に話す。専門用語は避けて、日常会話でよく使う語を優先。"
+        )
+    elif lang_code == "en":
+        return (
+            f"Casual small talk about '{theme}': plans, opinions, tickets, time, place, "
+            "what you saw on the news. Prefer everyday words and useful collocations."
+        )
+    elif lang_code == "es":
+        return (
+            f"Conversación informal sobre '{theme}': planes, opiniones, entradas, horarios y lugar. "
+            "Usa palabras cotidianas y colocaciones frecuentes."
+        )
+    elif lang_code == "fr":
+        return (
+            f"Petite discussion sur '{theme}': projets, avis, billets, horaires, lieu. "
+            "Privilégier le vocabulaire courant et les collocations utiles."
+        )
+    elif lang_code == "pt":
+        return (
+            f"Bate-papo sobre '{theme}': planos, opinião, ingressos, horário e local. "
+            "Prefira palavras do dia a dia e colocações frequentes."
+        )
+    elif lang_code == "id":
+        return (
+            f"Obrolan santai tentang '{theme}': rencana, pendapat, tiket, waktu, tempat. "
+            "Gunakan kosakata sehari-hari dan kolokasi umum."
+        )
+    elif lang_code == "ko":
+        return (
+            f"'{theme}'에 대해 가볍게 대화: 계획, 의견, 티켓, 시간, 장소. "
+            "일상적으로 자주 쓰는 표현과 연어를 우선한다."
+        )
+    return f"Casual talk about '{theme}' with everyday words (plans, opinions, tickets, time, place)."
 
 def make_tags(theme, audio_lang, subs, title_lang):
     """言語別に最適化された多言語タグを生成"""
@@ -1033,15 +1081,14 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             words_env_count = int(os.getenv("VOCAB_WORDS", "6"))
 
             # ★ 追加: AUTO_TREND の処理を先に実行
-            # ★ 追加: AUTO_TREND の処理を先に実行（第二字幕の国を優先）
+            # ★ AUTO_TREND：第二字幕の言語を優先してトレンドを取得し、
+            #    その話題を“日常会話で語る”前提の spec と context を注入
             if topic.strip().upper() == "AUTO_TREND":
                 try:
                     from pathlib import Path
                     TREND_DIR = TEMP / "trends"
 
-                    # ◎ トレンド取得は第二字幕の言語を優先、なければ音声言語
                     trend_lang = subs[1] if len(subs) > 1 else audio_lang
-
                     candidates = get_trend_candidates(
                         audio_lang=trend_lang,
                         cache_dir=TREND_DIR,
@@ -1051,15 +1098,42 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     if not candidates:
                         raise ValueError("no candidates")
 
-                    # ◎ 安定選択（UTC日付×trend_langで日替わり固定）
                     today = int(dt.datetime.utcnow().strftime("%Y%m%d"))
                     idx = (hash((trend_lang, today)) % len(candidates))
                     picked_topic = candidates[idx]
 
-                    logging.info(f"[TREND] trend_lang={trend_lang} → picked='{picked_topic}' "
-                                 f"(#{idx+1}/{len(candidates)})")
+                    # ここがポイント：トレンド用の“語彙方針”を spec で与える
+                    # - relation_mode='collocation' で話題周りの頻出表現を優先
+                    # - difficulty は環境変数で調整（既定 A2）
+                    # - pattern_hint は言語ごとに日常的な言い回しを提示（単語抽出の重みづけ）
+                    trend_patterns = {
+                        "ja": "〜について, 〜に行く, 〜を見る, 予定, チケット, 混雑, 会場, 何時, どこ, 意見",
+                        "en": "talk about, go to, watch, read about, plan to, tickets, schedule, where, when, opinion",
+                        "es": "hablar de, ir a, ver, entradas, horario, dónde, cuándo, opinión",
+                        "fr": "parler de, aller à, regarder, billets, horaires, où, quand, avis",
+                        "pt": "falar sobre, ir a, assistir, ingressos, horário, onde, quando, opinião",
+                        "id": "bicara tentang, pergi ke, menonton, tiket, jadwal, di mana, kapan, pendapat",
+                        "ko": "이야기하다, 가다, 보다, 티켓, 일정, 어디, 언제, 의견",
+                    }
+                    spec_for_run = {
+                        "theme": picked_topic,
+                        "context": _make_trend_context(picked_topic, audio_lang),
+                        "relation_mode": "collocation",
+                        "difficulty": os.getenv("TREND_DIFFICULTY", "A2"),
+                        "pos": ["noun", "verb", "adjective"],
+                        "pattern_hint": trend_patterns.get(audio_lang, trend_patterns.get("en", "")),
+                        # count は _normalize_spec 側で環境変数を継承
+                    }
 
-                    # --- 任意：確認用に一部をファイル出力（デバッグ）
+                    # 例文生成側にも“会話の文脈”として渡す
+                    context_hint = spec_for_run["context"]
+
+                    logging.info(
+                        f"[TREND] lang={trend_lang} → picked='{picked_topic}' "
+                        f"(#{idx+1}/{len(candidates)}) | context for {audio_lang} set."
+                    )
+
+                    # デバッグ出力（任意）
                     try:
                         (TREND_DIR).mkdir(parents=True, exist_ok=True)
                         with open(TREND_DIR / f"picked_{trend_lang}.txt", "w", encoding="utf-8") as f:
@@ -1071,6 +1145,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                 except Exception as e:
                     logging.warning(f"[TREND] failed ({e}) → fallback to AUTO.")
                     topic = "AUTO"
+                    
         
             if topic.strip().lower() == "auto":
                 try:

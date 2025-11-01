@@ -586,6 +586,7 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
     トグル状態は TEMP/_title_toggle.txt に保存して毎回反転。
     """
     import re
+    import random
     from pathlib import Path
 
     # --- 1分タグ（言語別） ---
@@ -622,19 +623,12 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
         s = s[:lim]
         # 不自然な末尾記号・空白の除去
         return re.sub(r"[ \u3000・、。!！?？:：\-–—｜|]+$", "", s)
-
-    # ---------------- トグル読み書き ----------------
-    toggle_file = TEMP / "_title_toggle.txt"
-    try:
-        prev = (toggle_file.read_text(encoding="utf-8").strip() or "0")
-        prev = 1 if prev == "1" else 0
-    except Exception:
-        prev = 0
-    mode = 1 - prev  # 今回のモード（交互反転）
-    try:
-        toggle_file.write_text(str(mode), encoding="utf-8")
-    except Exception:
-        pass  # 失敗してもタイトル生成は続行
+    # ---- ここがポイント：ランダム切替（0=クラシック / 1=1分タグ） ----
+    #   ※ 必要なら環境変数で強制上書きも可能（TITLE_STYLE=classic/fixed/random）
+    style = os.getenv("TITLE_STYLE", "random").lower()
+    if   style == "classic": mode = 0
+    elif style == "fixed":   mode = 1
+    else:                    mode = random.choice([0, 1])
 
     # ---------------- 1min 固定タイトル ----------------
     def _fixed_1min() -> str:

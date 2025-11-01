@@ -84,9 +84,9 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          #TARGET_ACCOUNT:      "acc3"      # ←★ この1行を追加
+          TARGET_ACCOUNT:      "acc3"      # ←★ この1行を追加
         run: |
-          python main.py AUTO \
+          python main.py AUTO_TREND \
             --privacy public \
             --chunk 999
 

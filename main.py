@@ -27,6 +27,8 @@ from bg_image       import fetch as fetch_bg
 from thumbnail      import make_thumbnail
 from upload_youtube import upload
 from topic_picker   import pick_by_content_type
+# ★ トレンド取得モジュール（Google News RSS）
+from trend_fetcher  import fetch_trending_topics
 
 # ───────────────────────────────────────────────
 GPT = OpenAI()
@@ -1029,6 +1031,19 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             spec_for_run = None
             words_env_count = int(os.getenv("VOCAB_WORDS", "6"))
 
+            # ★ 追加: AUTO_TREND の処理を先に実行
+            if topic.strip().upper() == "AUTO_TREND":
+                try:
+                    trend = fetch_trending_topics(audio_lang)
+                    if trend:
+                        picked_topic = trend
+                        logging.info(f"[TREND] Using trending topic for {audio_lang}: {trend}")
+                    else:
+                        raise ValueError("no trend")
+                except Exception as e:
+                    logging.warning(f"[TREND] failed ({e}) → fallback to AUTO.")
+                    topic = "AUTO"
+
             if topic.strip().lower() == "auto":
                 try:
                     picked_raw = pick_by_content_type("vocab", audio_lang, return_context=True)
@@ -1074,7 +1089,7 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     ap = argparse.ArgumentParser()
-    ap.add_argument("topic", help="語彙テーマ。AUTO で自動選択。カンマ/改行区切りなら単語リストとして使用")
+    ap.add_argument("topic", help="語彙テーマ。AUTO＝自動、AUTO_TREND＝最新トレンドから取得。カンマ/改行区切りなら単語リスト。")
     ap.add_argument("--turns", type=int, default=8)
     ap.add_argument("--privacy", default="unlisted", choices=["public","unlisted","private"])
     ap.add_argument("--lines-only", action="store_true")

@@ -1,10 +1,29 @@
 # topic_picker.py – vocab専用：機能→シーン→パターンを難易度連動の重みでランダム選択
-# 追加: トレンド専用 spec を生成する build_trend_spec() / pick_by_content_type(..., content_type="vocab_trend")
+# 追加:
+#  - アカウント(L1)×音声言語(Target)に応じた重み上乗せ（視聴率狙い）
+#  - 予約スロット（黄金テーマ）で最低1枠は強テーマを保証（任意）
+#  - 日付×アカウント×音声言語で擬似決定的なシード（被り抑制・安定）
+#  - specに演出ヒント（hook/visual）を付与（生成側で任意利用）
+#  - 既存APIは変更なし（安全）
 import os
+import json
 import random
+from datetime import date
 from typing import List, Tuple, Dict, Optional
 
-rng = random.SystemRandom()
+# ─────────────────────────────────────────
+# RNG: デフォルトは日次決定的（同日・同chで安定）。無効化→ DETERMINISTIC_DAY=0
+# ─────────────────────────────────────────
+def _select_rng() -> random.Random:
+    deterministic = os.getenv("DETERMINISTIC_DAY", "1") != "0"
+    if not deterministic:
+        return random.SystemRandom()
+    account = os.getenv("ACCOUNT") or os.getenv("TARGET_ACCOUNT") or ""
+    audio = os.getenv("AUDIO_LANG") or ""  # main側でセットしない場合は空でもOK
+    seed = hash((account, audio, date.today().isoformat()))
+    return random.Random(seed)
+
+rng = _select_rng()
 
 # ========== 定義 ==========
 # 機能（Functional）＝「何をしたいか」の核
@@ -12,7 +31,7 @@ FUNCTIONALS: List[str] = [
     "greetings & introductions",
     "numbers & prices",
     "time & dates",
-    "asking & giving directions",  # 🧭 道案内（既存を強化）
+    "asking & giving directions",  # 🧭
     "polite requests",
     "offers & suggestions",
     "clarifying & confirming",
@@ -29,7 +48,7 @@ FUNCTIONALS: List[str] = [
     "cause & reason",
     "condition & advice",
     "small talk starters",
-    "job interviews",              # 🎙️ 面接（新規）
+    "job interviews",              # 🎙️
 ]
 
 # シーン（Scene）＝「どこで使うか」
@@ -50,11 +69,11 @@ SCENES_BASE: List[str] = [
     "delivery and online shopping",
     "phone basics",
     "addresses & contact info",
-    "street directions",   # 🧭 道案内（新規）
-    "job interview",       # 🎙️ 面接（新規）
+    "street directions",   # 🧭
+    "job interview",       # 🎙️
 ]
 
-# Functional → 相性の良い Scene 候補（なければ SCENES_BASE を使う）
+# Functional → 相性の良い Scene 候補（なければ SCENES_BASE）
 SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "greetings & introductions": ["hotel check-in/out", "small talk at lobby", "phone basics", "restaurant ordering"],
     "numbers & prices": ["shopping basics", "paying & receipts", "transport tickets"],
@@ -76,7 +95,83 @@ SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "cause & reason": ["returns & exchanges", "facilities & problems"],
     "condition & advice": ["pharmacy basics", "emergencies", "dietary needs"],
     "small talk starters": ["small talk at lobby", "restaurant ordering", "phone basics"],
-    "job interviews": ["job interview", "appointments", "phone basics"],  # 追加
+    "job interviews": ["job interview", "appointments", "phone basics"],
+}
+
+# 追加: アカウント→学習者L1 の既定マップ（必要に応じて編集可）
+ACCOUNT_L1: Dict[str, str] = {
+    "acc1": "pt",  # en audio + pt subs
+    "acc2": "id",  # en + id
+    "acc3": "ja",  # en + ja
+    "acc4": "ja",  # ja audio + en subs → L1=ja（英語学習者向け逆方向も可だが既定はja）
+    "acc5": "ja",  # ja + ko → L1はja想定（日本人が韓国語）
+    "acc6": "ja",  # ja + id → L1はja想定
+    "acc7": "en",  # ko + en → L1はen想定（英語話者が韓国語）
+    "acc8": "ja",  # ko + ja → L1はja想定（日本人が韓国語）
+    "acc9": "pt",  # pt + en → L1はpt想定（ポルトガル語話者が英語）
+}
+
+# 追加: L1→Target で「刺さりやすいFunctional/Scene」に加点（相対）
+FUNCTIONAL_WEIGHTS_BY_LANGPAIR: Dict[Tuple[str, str], Dict[str, int]] = {
+    # ja→en
+    ("ja", "en"): {
+        "polite requests": 3, "asking & giving directions": 2,
+        "numbers & prices": 2, "time & dates": 1, "small talk starters": 1,
+    },
+    # id→en
+    ("id", "en"): {
+        "numbers & prices": 2, "shopping basics": 0,  # scene名は後段で
+        "polite requests": 2, "time & dates": 1,
+    },
+    # pt→en
+    ("pt", "en"): {
+        "polite requests": 3, "restaurant ordering": 0,
+        "clarifying & confirming": 2,
+    },
+    # en→ja
+    ("en", "ja"): {
+        "polite requests": 3, "hotel check-in/out": 0,
+        "asking & giving directions": 2,
+    },
+    # en→ko
+    ("en", "ko"): {
+        "polite requests": 3, "restaurant ordering": 0, "time & dates": 1,
+    },
+    # ja→ko
+    ("ja", "ko"): {
+        "polite requests": 2, "restaurant ordering": 1, "asking & giving directions": 1,
+    },
+}
+
+SCENE_WEIGHTS_BY_LANGPAIR: Dict[Tuple[str, str], Dict[str, int]] = {
+    ("ja", "en"): {
+        "restaurant ordering": 3, "street directions": 2, "hotel check-in/out": 2, "shopping basics": 1,
+    },
+    ("id", "en"): {
+        "shopping basics": 3, "paying & receipts": 2, "transport tickets": 1,
+    },
+    ("pt", "en"): {
+        "restaurant ordering": 3, "paying & receipts": 2, "phone basics": 1,
+    },
+    ("en", "ja"): {
+        "hotel check-in/out": 3, "street directions": 2, "restaurant ordering": 1,
+    },
+    ("en", "ko"): {
+        "restaurant ordering": 2, "street directions": 2, "shopping basics": 1,
+    },
+    ("ja", "ko"): {
+        "restaurant ordering": 2, "shopping basics": 1, "street directions": 1,
+    },
+}
+
+# 予約スロット（黄金テーマ）：該当ペアでは最優先で返す（RESERVED_FIRST=1で有効）
+RESERVED_PAIR_THEME: Dict[Tuple[str, str], Tuple[str, str]] = {
+    ("ja", "en"): ("polite requests", "restaurant ordering"),
+    ("pt", "en"): ("polite requests", "restaurant ordering"),
+    ("id", "en"): ("numbers & prices", "shopping basics"),
+    ("en", "ja"): ("polite requests", "hotel check-in/out"),
+    ("en", "ko"): ("polite requests", "restaurant ordering"),
+    ("ja", "ko"): ("polite requests", "restaurant ordering"),
 }
 
 # テーマ文脈（英語）…モデルへの指示用（出力言語とは別）
@@ -118,7 +213,7 @@ def _context_for_theme(functional: str, scene: str) -> str:
     if "address" in s or "contact" in s:
         return "Two people exchange addresses or contact information."
 
-    # functional による汎用 fallback
+    # functional fallback
     if "interview" in f:
         return "A candidate introduces themselves and answers simple interview questions."
     if "greeting" in f or "introductions" in f:
@@ -163,7 +258,7 @@ def _context_for_theme(functional: str, scene: str) -> str:
         return "Two people start light small talk."
     return "A simple everyday situation with polite, practical language."
 
-# pattern 候補（学習向けの再利用性重視）
+# pattern 候補
 PATTERN_CANDIDATES: List[str] = [
     "polite_request",
     "ask_permission",
@@ -173,14 +268,14 @@ PATTERN_CANDIDATES: List[str] = [
     "give_advice",
     "express_opinion",
     "express_consequence",
-    "ask_direction",     # 道案内向け
-    "confirm_route",     # 道案内向け
-    "self_introduction", # 面接・自己紹介
-    "talk_experience",   # 面接・過去経験
+    "ask_direction",
+    "confirm_route",
+    "self_introduction",
+    "talk_experience",
     "",
 ]
 
-# Functional/Scene → pattern の重み（学習需要＋自然さ）
+# Functional/Scene → pattern の重み
 PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
     "polite requests": {
         "polite_request": 6, "ask_permission": 4, "confirm_detail": 3, "make_suggestion": 2
@@ -197,7 +292,7 @@ PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
     "job interviews": {
         "self_introduction": 6, "talk_experience": 5, "express_opinion": 3, "confirm_detail": 2
     },
-    # Scene 名でもヒットさせる（マージ用）
+    # Scene 名でもヒット
     "street directions": {
         "ask_direction": 6, "confirm_route": 4, "confirm_detail": 2
     },
@@ -210,7 +305,6 @@ PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
 }
 
 # 難易度ごとの functional・scene の重み（相対値）
-# A1/A2 は基礎機能・基礎シーンを厚め、B1/B2 は問題解決・議論系や面接を厚め
 FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A1": {
         "greetings & introductions": 8, "numbers & prices": 7, "time & dates": 6,
@@ -263,10 +357,33 @@ SCENE_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     },
 }
 
-# ========== ユーティリティ ==========
+# ─────────────── 追加ユーティリティ ───────────────
 def _env_level() -> str:
     v = os.getenv("CEFR_LEVEL", "").strip().upper()
     return v if v in ("A1", "A2", "B1", "B2") else "A2"
+
+def _current_pair(audio_lang: str) -> Tuple[str, str]:
+    """(L1, Target) を推定。優先順位: L1_OVERRIDE > ACCOUNTマップ > SUBS から推定 > 不明なら ('', audio)"""
+    audio = (audio_lang or "").lower()
+    l1_override = os.getenv("L1_OVERRIDE", "").strip().lower()
+    if l1_override:
+        return (l1_override, audio)
+
+    account = (os.getenv("ACCOUNT") or os.getenv("TARGET_ACCOUNT") or "").strip().lower()
+    if account and account in ACCOUNT_L1:
+        return (ACCOUNT_L1[account], audio)
+
+    # SUBS 環境変数に "en,ja" のように入っていれば audio以外をL1候補に
+    subs = os.getenv("SUBS", "")
+    if subs:
+        try:
+            arr = [s.strip().lower() for s in subs.split(",") if s.strip()]
+            for s in arr:
+                if s != audio:
+                    return (s, audio)
+        except Exception:
+            pass
+    return ("", audio)
 
 def _choose_weighted(items: List[Tuple[str, int]]) -> str:
     pool, weights = zip(*[(k, max(0, w)) for k, w in items if w > 0])
@@ -275,24 +392,57 @@ def _choose_weighted(items: List[Tuple[str, int]]) -> str:
 def _weights_from_dict(keys: List[str], table: Dict[str, int]) -> List[Tuple[str, int]]:
     return [(k, table.get(k, 1)) for k in keys]
 
-def _pick_functional() -> str:
+def _maybe_force_reserved_pair(functional_weights: Dict[str, int], scene_candidates: List[str],
+                               l1: str, tgt: str) -> Optional[Tuple[str, str]]:
+    """RESERVED_FIRST=1 かつ予約が存在すれば (functional, scene) を返す。なければ None。"""
+    if os.getenv("RESERVED_FIRST", "1") == "0":
+        return None
+    key = (l1, tgt)
+    if key not in RESERVED_PAIR_THEME:
+        return None
+    f, s = RESERVED_PAIR_THEME[key]
+    # 安全チェック：存在しないキーを避ける
+    if f in functional_weights and (s in scene_candidates or not scene_candidates):
+        return (f, s)
+    return None
+
+# ─────────────── 既存ピッカーを言語ペア加点で拡張 ───────────────
+def _pick_functional(audio_lang: str) -> str:
     override = os.getenv("FUNCTIONAL_OVERRIDE", "").strip()
     if override:
         return override
     level = _env_level()
-    weights = FUNCTIONAL_WEIGHTS_BY_LEVEL.get(level, {})
+    weights = FUNCTIONAL_WEIGHTS_BY_LEVEL.get(level, {}).copy()
+
+    l1, tgt = _current_pair(audio_lang)
+    pair = (l1, tgt)
+    if pair in FUNCTIONAL_WEIGHTS_BY_LANGPAIR:
+        for k, v in FUNCTIONAL_WEIGHTS_BY_LANGPAIR[pair].items():
+            weights[k] = max(1, weights.get(k, 1) + v)
+
     items = _weights_from_dict(FUNCTIONALS, weights)
     return _choose_weighted(items)
 
-def _pick_scene(functional: str) -> str:
+def _pick_scene(functional: str, audio_lang: str) -> str:
     override = os.getenv("SCENE_OVERRIDE", "").strip()
     if override:
         return override
     level = _env_level()
     base = SCENES_BY_FUNCTIONAL.get(functional, SCENES_BASE)
-    # level 重みを適用（未定義は1）
+
+    # level 重み
     level_weights = SCENE_WEIGHTS_BY_LEVEL.get(level, {})
-    items = _weights_from_dict(base, level_weights)
+    weights = {k: level_weights.get(k, 1) for k in base}
+
+    # 言語ペア重み
+    l1, tgt = _current_pair(audio_lang)
+    pair = (l1, tgt)
+    if pair in SCENE_WEIGHTS_BY_LANGPAIR:
+        for k, v in SCENE_WEIGHTS_BY_LANGPAIR[pair].items():
+            if k in weights:
+                weights[k] = max(1, weights.get(k, 1) + v)
+
+    items = list(weights.items())
     if not any(w > 1 for _, w in items):
         items = [(s, 2) for s in base]  # 均等だが少し厚め
     return _choose_weighted(items)
@@ -302,14 +452,12 @@ def _pick_pattern(functional: str, scene: str) -> str:
     if override:
         return override
 
-    # functional / scene の重みをマージ
     merged: Dict[str, int] = {k: 1 for k in PATTERN_CANDIDATES}
     for k, w in PATTERN_WEIGHTS_BY_FUNCTIONAL.get(functional, {}).items():
         merged[k] = merged.get(k, 1) + w
     for k, w in PATTERN_WEIGHTS_BY_FUNCTIONAL.get(scene, {}).items():
         merged[k] = merged.get(k, 1) + w
 
-    # level バイアス（A1/A2 は polite/confirm/directions、B1/B2 は interview/opinion/logic）
     level = _env_level()
     level_bias: Dict[str, Dict[str, int]] = {
         "A1": {"polite_request": 3, "ask_permission": 2, "confirm_detail": 2, "ask_direction": 3, "confirm_route": 2},
@@ -327,7 +475,6 @@ def _random_pos_from_env_or_default() -> List[str]:
     v = os.getenv("VOCAB_POS", "").strip()
     if v:
         return [x.strip() for x in v.split(",") if x.strip()]
-    # POS は main.py 側で言語別に最終決定してもOK。ここでは未指定 or ランダム軽量にしておく
     return []
 
 def _random_difficulty() -> str:
@@ -348,20 +495,19 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
         "theme": theme,
         "context": _context_for_theme(functional, scene),
         "count": int(os.getenv("VOCAB_WORDS", "6")),
-        "pos": _random_pos_from_env_or_default(),                 # POS は ENV 優先（未指定なら main.py へ委譲）
+        "pos": _random_pos_from_env_or_default(),  # POS は ENV 優先
         "relation_mode": os.getenv("RELATION_MODE", "").strip().lower(),
         "difficulty": _random_difficulty(),
         "pattern_hint": _pick_pattern(functional, scene),
         "morphology": _parse_csv_env("MORPHOLOGY"),
+        # ▼ 追加：演出ヒント（サムネ・フック強化用に任意利用）
+        "hook_template": "❌ Bad → ✅ Good (under 1s swap)",
+        "visual_hint": f"{scene} scene, polite tone, micro-dialogue with quick confirm",
     }
     return spec
 
 # ========== トレンド専用: 関連語を“強く”引かせる spec ==========
 def _trend_pattern_hint(audio_lang: str) -> str:
-    """
-    topic に固有の “役職/ポジション/機材/動作/イベント/会場/ルール/スコア・時間”
-    といった『話題に特化した語』を優先させるための軽い誘導語。
-    """
     common = "roles, positions, equipment, actions, events, venues, rules, scores or times"
     lang = (audio_lang or "").lower()
     if lang == "ja":
@@ -379,26 +525,13 @@ def _trend_pattern_hint(audio_lang: str) -> str:
     return common
 
 def _trend_context(theme: str, audio_lang: str) -> str:
-    """
-    例文生成にも効きやすい短い英語文脈（生成モデルへの指示用）。
-    出力言語は main.py 側で制御するため、ここは英語ベースでOK。
-    """
-    t = (theme or "").strip()
-    if not t:
-        t = "the current popular topic"
+    t = (theme or "").strip() or "the current popular topic"
     return (
         f"Talk about '{t}' with topic-specific vocabulary: roles/positions, key actions, objects/equipment, "
         f"venues/stadiums, rules, scores/times. Keep it practical."
     )
 
 def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None) -> Dict[str, object]:
-    """
-    トレンド話題に“関連する用語”を多めに引くための spec を生成。
-    - relation_mode: 'trend_related'（main.py 側の _gen_vocab_list_from_spec が解釈）
-    - pos: noun/verb/adjective を優先（品詞が偏らないように）
-    - difficulty: TREND_DIFFICULTY（未設定なら B1）
-    - pattern_hint: 言語別の誘導語（役職/動作/道具/会場など）
-    """
     n = int(count or os.getenv("VOCAB_WORDS", "6"))
     level = os.getenv("TREND_DIFFICULTY", "B1").strip().upper()
     if level not in ("A1", "A2", "B1", "B2"):
@@ -408,11 +541,14 @@ def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None
         "context": _trend_context(theme, audio_lang),
         "count": n,
         "pos": ["noun", "verb", "adjective"],
-        "relation_mode": "trend_related",     # ★ ここが肝
+        "relation_mode": "trend_related",  # ★
         "difficulty": level,
         "pattern_hint": _trend_pattern_hint(audio_lang),
-        "morphology": [],                     # 必要なら ENV で main と同様に拡張可
+        "morphology": [],
         "trend": True,
+        # 追加ヒント
+        "hook_template": "Topic burst → key terms x3 → quick example",
+        "visual_hint": "Bold keyword captions, scoreboard/timer overlay if relevant",
     }
     return spec
 
@@ -420,21 +556,16 @@ def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
     """
     vocab の場合：
-      1) Functional を難易度連動の重みで選ぶ
-      2) その Functional に相性の良い Scene を重みで選ぶ（難易度も反映）
-      3) pattern_hint も上記に連動して重み選択
+      1) Functional（難易度×言語ペア重み）を選ぶ
+      2) その Functional に相性の良い Scene（難易度×言語ペア重み）を選ぶ
+      3) pattern_hint も上記に連動して選ぶ
     ENV:
-      - CEFR_LEVEL=A1/A2/B1/B2 で難易度固定
-      - FUNCTIONAL_OVERRIDE / SCENE_OVERRIDE / PATTERN_HINT で強制上書き
-      - THEME_OVERRIDE: theme 文字列を丸ごと上書き（return_context=False の互換用途）
-
-    追加:
-      - content_type="vocab_trend" または "trend" のとき:
-        THEME_OVERRIDE があればそれをテーマとして build_trend_spec を返す（return_context=True 推奨）。
-        return_context=False の場合はテーマ文字列のみ返す。
-    戻り値:
-      - return_context=False → "functional – scene" もしくは THEME（trend時）
-      - return_context=True  → dict(spec)
+      - CEFR_LEVEL=A1/A2/B1/B2
+      - FUNCTIONAL_OVERRIDE / SCENE_OVERRIDE / PATTERN_HINT
+      - THEME_OVERRIDE（return_context=False の互換用途）
+      - ACCOUNT or TARGET_ACCOUNT / L1_OVERRIDE / SUBS（L1推定用）
+      - RESERVED_FIRST=1（黄金テーマ確定枠ON/OFF）
+      - DETERMINISTIC_DAY=1（日次決定的シードON/OFF）
     """
     ct = (content_type or "vocab").lower()
 
@@ -458,6 +589,8 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
                 "difficulty": _random_difficulty(),
                 "pattern_hint": "",
                 "morphology": [],
+                "hook_template": "Fact → Tip → Example",
+                "visual_hint": "Clean captions, single-icon cue",
             }
         return "general vocabulary"
 
@@ -465,8 +598,19 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
     if theme_override and not return_context:
         return theme_override
 
-    functional = _pick_functional()
-    scene = _pick_scene(functional)
+    # 予約スロット判定（有効時はここで即返し）
+    l1, tgt = _current_pair(audio_lang)
+    reserved = _maybe_force_reserved_pair(FUNCTIONAL_WEIGHTS_BY_LEVEL.get(_env_level(), {}),
+                                          SCENES_BASE, l1, tgt)
+    if reserved:
+        f, s = reserved
+        if not return_context:
+            return f"{f} – {s}"
+        return _build_spec(f, s, audio_lang)
+
+    # 通常フロー
+    functional = _pick_functional(audio_lang)
+    scene = _pick_scene(functional, audio_lang)
 
     if not return_context:
         return f"{functional} – {scene}"
@@ -475,7 +619,9 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
 
 # ローカルテスト
 if __name__ == "__main__":
+    os.environ.setdefault("ACCOUNT", "acc3")       # デモ
+    os.environ.setdefault("AUDIO_LANG", "en")      # デモ
     print(pick_by_content_type("vocab", "en"))
-    print(pick_by_content_type("vocab", "en", return_context=True))
+    print(json.dumps(pick_by_content_type("vocab", "en", return_context=True), ensure_ascii=False, indent=2))
     print(pick_by_content_type("vocab_trend", "en"))
-    print(pick_by_content_type("vocab_trend", "en", return_context=True))
+    print(json.dumps(pick_by_content_type("vocab_trend", "en", return_context=True), ensure_ascii=False, indent=2))

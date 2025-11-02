@@ -537,6 +537,39 @@ def _example_for_index(valid_dialogue: list[tuple[str, str]], idx0: int) -> str:
         return valid_dialogue[ex_pos][1]
     return ""
 
+
+def _safeify_trend_title(theme: str, lang: str) -> str:
+    """
+    トレンドテーマが政治・戦争・事件・医療などの場合、
+    安全な教育コンテンツ向けタイトルに置き換える。
+    """
+    risk_words = [
+        # 政治・戦争・宗教・事故・医療など
+        "war","attack","sex","murder","killed","politics","election","vote","president",
+        "trump","biden","putin","israel","gaza","palestine","covid","vaccine","virus",
+        "drug","explosion","shooting","scandal","accident","terror","suicide","death",
+        "earthquake","tsunami","hurricane","flood","protest","riot","bomb","hostage"
+    ]
+
+    text = theme.strip().lower()
+    risky = any(word in text for word in risk_words)
+
+    if not risky:
+        return theme  # 通常トピックはそのまま返す
+
+    # 言語別の安全タイトルに変換
+    safe_titles = {
+        "ja": "最近のニュースを題材にした語彙学習",
+        "en": "Vocabulary from recent news topics",
+        "ko": "최근 뉴스 주제에서 배우는 어휘",
+        "es": "Vocabulario de temas de actualidad",
+        "fr": "Vocabulaire à partir des sujets d’actualité",
+        "pt": "Vocabulário de tópicos recentes de notícias",
+        "id": "Kosakata dari topik berita terkini",
+    }
+    return safe_titles.get(lang, safe_titles["en"])
+    
+
 # ───────────────────────────────────────────────
 # 単語専用・文脈つき翻訳（1語だけ返す）
 # ───────────────────────────────────────────────
@@ -609,6 +642,9 @@ def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
         theme_local = theme if title_lang == "en" else translate(theme, title_lang)
     except Exception:
         theme_local = theme
+
+    # ★ これを追加：トレンドがリスキーなら安全な汎化タイトルに置換
+    theme_local = _safeify_trend_title(theme_local, title_lang)
 
     # 日本語ではシリーズラベル（◯◯語会話）を先頭固定
     prefix = ""

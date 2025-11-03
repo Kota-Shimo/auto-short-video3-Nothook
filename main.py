@@ -1181,6 +1181,18 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     _try_upload_with_fallbacks()
 
+def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
+    """
+    最小実装：与えたテーマから、その言語向けに n 語を選ぶ。
+    実体は _gen_vocab_list_from_spec を流用。
+    """
+    spec = {
+        "theme": theme,
+        "context": _make_trend_context(theme, lang_code),
+        "count": n,
+    }
+    return _gen_vocab_list_from_spec(spec, lang_code)
+    
 # ───────────────────────────────────────────────
 def run_all(topic, turns, privacy, do_upload, chunk_size):
     """

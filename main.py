@@ -998,12 +998,12 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
-                        # （修正後）フック行の第二言語だけ2文まで許可
+                        # （修正後）
                         trans = translate_sentence_strict(
                             line,
                             src_lang=audio_lang,
                             target_lang=lang,
-                            max_sents=1,      # ★ 2文まで保持
+                            max_sents=1,      
                             max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
                         )
                 except Exception:

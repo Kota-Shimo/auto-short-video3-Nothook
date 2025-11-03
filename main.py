@@ -884,86 +884,88 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-# === フックを先頭に入れる（字幕はここでは入れない） ===
-hook_text = None
-hook_offset = 0
-if HOOK_ENABLE:
-    theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
-    pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
-    try:
-        hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
-    except Exception:
-        hook_text = None
-    if hook_text:
-        valid_dialogue.insert(0, ("N", hook_text))
-        hook_offset = 1
-# === ここまで追加 ===
+    # === フックを先頭に入れる（字幕はここでは入れない） ===
+    hook_text = None
+    hook_offset = 0
+    if HOOK_ENABLE:
+        theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
+        pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
+        try:
+            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
+        except Exception:
+            hook_text = None
+        if hook_text:
+            valid_dialogue.insert(0, ("N", hook_text))
+            hook_offset = 1
+    # === ここまで追加 ===
 
-# ✅ ここからは常にループ（HOOK_ENABLEの中に入れないこと！）
-for i, (spk, line) in enumerate(valid_dialogue, 1):
-    # フック行だけは特別に role_idx = -1（“文”扱い）
-    if hook_offset == 1 and i == 1:
-        role_idx = -1
-    else:
-        role_idx = (i - 1 - hook_offset) % 3
+    # ✅ 全行ループ（HOOK_ENABLE ブロックの外・関数内）
+    for i, (spk, line) in enumerate(valid_dialogue, 1):
+        # フック行だけは特別に role_idx = -1（“文”扱い）
+        if hook_offset == 1 and i == 1:
+            role_idx = -1
+        else:
+            role_idx = (i - 1 - hook_offset) % 3
 
-    # ----- TTS（全行）-----
-    tts_line = line
-    if audio_lang == "ja":
-        if role_idx in (2, -1):  # 例文 or フック → 文扱い
-            base_ex = _PARENS_JA.sub(" ", tts_line).strip()
-            base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
-            do_kana = False
-            if JA_EX_READING == "on":
-                do_kana = True
-            elif JA_EX_READING == "auto":
-                if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
+        # ----- TTS（全行）-----
+        tts_line = line
+        if audio_lang == "ja":
+            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+                base_ex = _PARENS_JA.sub(" ", tts_line).strip()
+                base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
+                do_kana = False
+                if JA_EX_READING == "on":
                     do_kana = True
-            tts_line = (_kana_reading_sentence(base_ex) or base_ex) if do_kana else base_ex
+                elif JA_EX_READING == "auto":
+                    if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
+                        do_kana = True
+                tts_line = (_kana_reading_sentence(base_ex) or base_ex) if do_kana else base_ex
+            else:
+                if _KANJI_ONLY.fullmatch(line):
+                    yomi = _kana_reading(line)
+                    if yomi:
+                        tts_line = yomi
+                base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
+                tts_line = base + "。" if len(base) >= 2 else base
         else:
-            if _KANJI_ONLY.fullmatch(line):
-                yomi = _kana_reading(line)
-                if yomi:
-                    tts_line = yomi
-            base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
-            tts_line = base + "。" if len(base) >= 2 else base
-    else:
-        if role_idx in (2, -1):  # 例文 or フック → 文扱い
-            tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
+            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+                tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
-    out_audio = TEMP / f"{i:02d}.wav"
-    style_for_tts = HOOK_STYLE if role_idx == -1 else ("serious" if audio_lang == "ja" else "neutral")
-    speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
-    audio_parts.append(out_audio)
-    tts_lines.append(tts_line)
+        out_audio = TEMP / f"{i:02d}.wav"
+        style_for_tts = HOOK_STYLE if role_idx == -1 else ("serious" if audio_lang == "ja" else "neutral")
+        speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
+        audio_parts.append(out_audio)
+        tts_lines.append(tts_line)
 
-    # ----- 字幕（全行）-----
-    for r, lang in enumerate(subs):
-        if lang == audio_lang:
-            sub_rows[r].append(_clean_sub_line(line, lang))
-        else:
-            try:
-                if role_idx in (0, 1):
-                    # 単語行 → 1語に確定する辞書訳
-                    example_ctx = _example_for_index(valid_dialogue, i-1)
-                    pos_hint = None
-                    if isinstance(spec, dict) and spec.get("pos"):
-                        pos_hint = ",".join(spec["pos"])
-                    elif audio_lang == "ja":
-                        _k = _guess_ja_pos(line)
-                        pos_map = {"verb":"verb", "iadj":"adjective", "naadj":"adjective", "noun":"noun"}
-                        pos_hint = pos_map.get(_k, None)
-                    trans = translate_word_context(
-                        word=line, target_lang=lang, src_lang=audio_lang,
-                        theme=theme, example=example_ctx, pos_hint=pos_hint
-                    )
-                else:
-                    # 例文 or フック → 文翻訳
-                    trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
-            except Exception:
-                trans = line
-            sub_rows[r].append(_clean_sub_line(trans, lang))
-            
+        # ----- 字幕（全行）-----
+        for r, lang in enumerate(subs):
+            if lang == audio_lang:
+                sub_rows[r].append(_clean_sub_line(line, lang))
+            else:
+                try:
+                    if role_idx in (0, 1):
+                        # 単語行 → 1語に確定する辞書訳
+                        example_ctx = _example_for_index(valid_dialogue, i-1)
+                        pos_hint = None
+                        if isinstance(spec, dict) and spec.get("pos"):
+                            pos_hint = ",".join(spec["pos"])
+                        elif audio_lang == "ja":
+                            _k = _guess_ja_pos(line)
+                            pos_map = {"verb":"verb", "iadj":"adjective", "naadj":"adjective", "noun":"noun"}
+                            pos_hint = pos_map.get(_k, None)
+                        trans = translate_word_context(
+                            word=line, target_lang=lang, src_lang=audio_lang,
+                            theme=theme, example=example_ctx, pos_hint=pos_hint
+                        )
+                    else:
+                        # 例文 or フック → 文翻訳
+                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+                except Exception:
+                    trans = line
+                sub_rows[r].append(_clean_sub_line(trans, lang))
+
+    # 🔽🔽🔽 ここからは “ループの外” に置く（重要）🔽🔽🔽
+
     # 単純結合 → 整音 → mp3
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
     pre_ms = PRE_SIL_MS_JA if audio_lang == "ja" else PRE_SIL_MS
@@ -972,7 +974,7 @@ for i, (spk, line) in enumerate(valid_dialogue, 1):
     new_durs = _concat_with_gaps(audio_parts, gap_ms=gap_ms, pre_ms=pre_ms, min_ms=min_ms)
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
-
+    
     # ───────────────── 背景画像（必ず作る） ─────────────────
     bg_png = TEMP / "bg.png"
     try:

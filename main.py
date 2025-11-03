@@ -31,6 +31,11 @@ from topic_picker   import pick_by_content_type
 from trend_fetcher  import get_trend_candidates
 import datetime as dt   # ← 無ければこの1行を追加（UTC日付で安定選択に使う）
 
+from hook import generate_hook     # ← 追加
+
+HOOK_ENABLE = os.getenv("HOOK_ENABLE", "1") == "1"
+HOOK_STYLE  = os.getenv("HOOK_STYLE", "energetic")
+
 # ───────────────────────────────────────────────
 GPT = OpenAI()
 CONTENT_MODE = "vocab"
@@ -92,7 +97,7 @@ def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
 def resolve_topic(arg_topic: str) -> str:
     # 手入力の topic はそのまま通す（AUTO時の処理は run_all 内で実施）
     return arg_topic
-
+    
 # ───────────────────────────────────────────────
 # クリーニング・バリデーション共通
 # ───────────────────────────────────────────────
@@ -134,6 +139,16 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
         t = t[:end]
     return t
 
+
+# 既存: _clean_sub_line の下あたりに追加
+def _clean_sub_line_hook(text: str, lang_code: str, max_sents: int = 2, max_len: int = 120) -> str:
+    t = _clean_strict(text).replace("\n", " ").strip()
+    ends = list(_SENT_END.finditer(t))  # [。.!?！？] のマッチ一覧
+    if len(ends) >= max_sents:
+        t = t[:ends[max_sents-1].end()]
+    if len(t) > max_len:
+        t = t[:max_len].rstrip(" .、。!！?？") + "…"
+    return t
 # ───────────────────────────────────────────────
 # 翻訳の強化（例文用）
 # ───────────────────────────────────────────────
@@ -879,30 +894,43 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    for i, (spk, line) in enumerate(valid_dialogue, 1):
-        role_idx = (i - 1) % 3
+    # === フックを先頭に入れる（字幕はここでは入れない） ===
+    hook_text = None
+    hook_offset = 0
+    if HOOK_ENABLE:
+        theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
+        pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
+        try:
+            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
+        except Exception:
+            hook_text = None
+        if hook_text:
+            valid_dialogue.insert(0, ("N", hook_text))
+            hook_offset = 1
+    # === ここまで追加 ===
 
+    # ✅ 全行ループ（HOOK_ENABLE ブロックの外・関数内）
+    for i, (spk, line) in enumerate(valid_dialogue, 1):
+        # フック行だけは特別に role_idx = -1（“文”扱い）
+        if hook_offset == 1 and i == 1:
+            role_idx = -1
+        else:
+            role_idx = (i - 1 - hook_offset) % 3
+
+        # ----- TTS（全行）-----
         tts_line = line
         if audio_lang == "ja":
-            if role_idx == 2:
-                # ── 例文（日本語）：かっこ除去＋終止保証＋必要なら“かな読み”に変換 ──
+            if role_idx in (2, -1):  # 例文 or フック → 文扱い
                 base_ex = _PARENS_JA.sub(" ", tts_line).strip()
                 base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
-
                 do_kana = False
                 if JA_EX_READING == "on":
                     do_kana = True
                 elif JA_EX_READING == "auto":
                     if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
                         do_kana = True
-
-                if do_kana:
-                    yomi_ex = _kana_reading_sentence(base_ex)
-                    tts_line = yomi_ex or base_ex
-                else:
-                    tts_line = base_ex
+                tts_line = (_kana_reading_sentence(base_ex) or base_ex) if do_kana else base_ex
             else:
-                # ── 単語（日本語）：漢字のみ語は“かな読み”、終止付与で抑揚安定 ──
                 if _KANJI_ONLY.fullmatch(line):
                     yomi = _kana_reading(line)
                     if yomi:
@@ -910,18 +938,31 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                 base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
                 tts_line = base + "。" if len(base) >= 2 else base
         else:
-            # ── 非日本語：例文のみ終止保証 ──
-            if role_idx == 2:
+            if role_idx in (2, -1):  # 例文 or フック → 文扱い
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
         out_audio = TEMP / f"{i:02d}.wav"
-        style_for_tts = "serious" if audio_lang == "ja" else "neutral"
+        style_for_tts = HOOK_STYLE if role_idx == -1 else ("serious" if audio_lang == "ja" else "neutral")
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # ── 字幕（原文 or 翻訳） ──
+        # ----- 字幕（全行）-----
+# ----- 字幕（全行）-----
         for r, lang in enumerate(subs):
+            # ★ フック行（role_idx == -1）だけは「2文まで」許可する
+            if role_idx == -1:
+                if lang == audio_lang:
+                    sub_rows[r].append(_clean_sub_line_hook(line, lang))
+                else:
+                    try:
+                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+                    except Exception:
+                        trans = line
+                    sub_rows[r].append(_clean_sub_line_hook(trans, lang))
+                continue
+        
+            # ← ここから下は従来どおり（単語/例文）
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))
             else:
@@ -945,6 +986,8 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                     trans = line
                 sub_rows[r].append(_clean_sub_line(trans, lang))
 
+    # 🔽🔽🔽 ここからは “ループの外” に置く（重要）🔽🔽🔽
+
     # 単純結合 → 整音 → mp3
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
     pre_ms = PRE_SIL_MS_JA if audio_lang == "ja" else PRE_SIL_MS
@@ -953,7 +996,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     new_durs = _concat_with_gaps(audio_parts, gap_ms=gap_ms, pre_ms=pre_ms, min_ms=min_ms)
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
-
+    
     # ───────────────── 背景画像（必ず作る） ─────────────────
     bg_png = TEMP / "bg.png"
     try:

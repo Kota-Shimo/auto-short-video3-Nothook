@@ -31,6 +31,11 @@ from topic_picker   import pick_by_content_type
 from trend_fetcher  import get_trend_candidates
 import datetime as dt   # ← 無ければこの1行を追加（UTC日付で安定選択に使う）
 
+from hook import generate_hook     # ← 追加
+
+HOOK_ENABLE = os.getenv("HOOK_ENABLE", "1") == "1"
+HOOK_STYLE  = os.getenv("HOOK_STYLE", "energetic")
+
 # ───────────────────────────────────────────────
 GPT = OpenAI()
 CONTENT_MODE = "vocab"
@@ -879,8 +884,41 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    for i, (spk, line) in enumerate(valid_dialogue, 1):
-        role_idx = (i - 1) % 3
+    # === ここから追加：冒頭フックを先頭に入れる（字幕も先頭に入れる） ===
+    hook_text = None
+    hook_offset = 0
+    if HOOK_ENABLE:
+        theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
+        pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
+        try:
+            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
+        except Exception:
+            hook_text = None
+    
+        if hook_text:
+            # 再生順の先頭に来るよう、valid_dialogue の最初に入れる
+            valid_dialogue.insert(0, ("N", hook_text))
+            hook_offset = 1
+    
+            # 字幕の先頭にもフック行を入れる（翻訳は「文」扱い）
+            for r, lang in enumerate(subs):
+                if lang == audio_lang:
+                    sub_rows[r].insert(0, _clean_sub_line(hook_text, lang))
+                else:
+                    try:
+                        trans_hook = translate_sentence_strict(hook_text, src_lang=audio_lang, target_lang=lang)
+                    except Exception:
+                        trans_hook = hook_text
+                    sub_rows[r].insert(0, _clean_sub_line(trans_hook, lang))
+    # === ここまで追加 ===
+
+        for i, (spk, line) in enumerate(valid_dialogue, 1):
+            # フックがあると 3行ブロックが1つズレるので補正
+            # ・フック行（i == 1 かつ hook_offset == 1）は role_idx = -1 として特別扱い
+            if hook_offset == 1 and i == 1:
+                role_idx = -1   # フック行（文扱い）
+            else:
+                role_idx = (i - 1 - hook_offset) % 3
 
         tts_line = line
         if audio_lang == "ja":

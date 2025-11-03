@@ -97,7 +97,7 @@ def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
 def resolve_topic(arg_topic: str) -> str:
     # 手入力の topic はそのまま通す（AUTO時の処理は run_all 内で実施）
     return arg_topic
-
+    
 # ───────────────────────────────────────────────
 # クリーニング・バリデーション共通
 # ───────────────────────────────────────────────
@@ -139,6 +139,16 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
         t = t[:end]
     return t
 
+
+# 既存: _clean_sub_line の下あたりに追加
+def _clean_sub_line_hook(text: str, lang_code: str, max_sents: int = 2, max_len: int = 120) -> str:
+    t = _clean_strict(text).replace("\n", " ").strip()
+    ends = list(_SENT_END.finditer(t))  # [。.!?！？] のマッチ一覧
+    if len(ends) >= max_sents:
+        t = t[:ends[max_sents-1].end()]
+    if len(t) > max_len:
+        t = t[:max_len].rstrip(" .、。!！?？") + "…"
+    return t
 # ───────────────────────────────────────────────
 # 翻訳の強化（例文用）
 # ───────────────────────────────────────────────
@@ -938,13 +948,26 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         tts_lines.append(tts_line)
 
         # ----- 字幕（全行）-----
+# ----- 字幕（全行）-----
         for r, lang in enumerate(subs):
+            # ★ フック行（role_idx == -1）だけは「2文まで」許可する
+            if role_idx == -1:
+                if lang == audio_lang:
+                    sub_rows[r].append(_clean_sub_line_hook(line, lang))
+                else:
+                    try:
+                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+                    except Exception:
+                        trans = line
+                    sub_rows[r].append(_clean_sub_line_hook(trans, lang))
+                continue
+        
+            # ← ここから下は従来どおり（単語/例文）
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))
             else:
                 try:
                     if role_idx in (0, 1):
-                        # 単語行 → 1語に確定する辞書訳
                         example_ctx = _example_for_index(valid_dialogue, i-1)
                         pos_hint = None
                         if isinstance(spec, dict) and spec.get("pos"):
@@ -958,7 +981,6 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
-                        # 例文 or フック → 文翻訳
                         trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
                 except Exception:
                     trans = line

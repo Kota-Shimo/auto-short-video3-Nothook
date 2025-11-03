@@ -170,13 +170,28 @@ def _needs_retranslate(output: str, src_lang: str, target_lang: str, original: s
         return True
     return False
 
-def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) -> str:
+def translate_sentence_strict(
+    sentence: str, 
+    src_lang: str, 
+    target_lang: str,
+    max_sents: int = 1,          # ★ 追加：許可する文数（既定=1）
+    max_len: int = 120           # ★ 追加：最大長トリム
+) -> str:
     try:
         first = translate(sentence, target_lang)
     except Exception:
         first = ""
+
+    def _final_clean(s: str) -> str:
+        # ★ 文数=1なら従来の1文クリーニング、2以上ならフック専用の多文クリーニング
+        if max_sents == 1:
+            return _clean_sub_line(s, target_lang)
+        else:
+            return _clean_sub_line_hook(s, target_lang, max_sents=max_sents, max_len=max_len)
+
     if not _needs_retranslate(first, src_lang, target_lang, sentence):
-        return _clean_sub_line(first, target_lang)
+        return _final_clean(first)
+
     try:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
@@ -185,21 +200,16 @@ def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) ->
                 "content":(
                     f"Translate from {LANG_NAME.get(src_lang,'source language')} "
                     f"to {LANG_NAME.get(target_lang,'target language')}.\n"
-                    "Return ONLY the translation as a single sentence. "
-                    "No explanations, no quotes, no extra symbols.\n\n"
+                    "Return ONLY the translation. No explanations, no quotes, no extra symbols.\n\n"
                     f"Text: {sentence}"
                 )
             }],
             temperature=0.0, top_p=1.0
         )
         out = (rsp.choices[0].message.content or "").strip()
-        out = _clean_sub_line(out, target_lang)
-        if out:
-            return out
+        return _final_clean(out)
     except Exception:
-        pass
-    return _clean_sub_line(sentence, target_lang)
-
+        return _final_clean(sentence)
 # ───────────────────────────────────────────────
 # ラングエージルール
 # ───────────────────────────────────────────────
@@ -956,7 +966,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                     sub_rows[r].append(_clean_sub_line_hook(line, lang))
                 else:
                     try:
-                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+                        # （修正後）フック行の第二言語だけ2文まで許可
+                        trans = translate_sentence_strict(
+                            line,
+                            src_lang=audio_lang,
+                            target_lang=lang,
+                            max_sents=2,      # ★ 2文まで保持
+                            max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
+                        )
                     except Exception:
                         trans = line
                     sub_rows[r].append(_clean_sub_line_hook(trans, lang))
@@ -981,7 +998,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
-                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+                        # （修正後）フック行の第二言語だけ2文まで許可
+                        trans = translate_sentence_strict(
+                            line,
+                            src_lang=audio_lang,
+                            target_lang=lang,
+                            max_sents=2,      # ★ 2文まで保持
+                            max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
+                        )
                 except Exception:
                     trans = line
                 sub_rows[r].append(_clean_sub_line(trans, lang))

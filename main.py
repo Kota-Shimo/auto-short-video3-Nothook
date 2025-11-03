@@ -31,11 +31,6 @@ from topic_picker   import pick_by_content_type
 from trend_fetcher  import get_trend_candidates
 import datetime as dt   # ← 無ければこの1行を追加（UTC日付で安定選択に使う）
 
-from hook import generate_hook     # ← 追加
-
-HOOK_ENABLE = os.getenv("HOOK_ENABLE", "1") == "1"
-HOOK_STYLE  = os.getenv("HOOK_STYLE", "energetic")
-
 # ───────────────────────────────────────────────
 GPT = OpenAI()
 CONTENT_MODE = "vocab"
@@ -97,7 +92,7 @@ def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
 def resolve_topic(arg_topic: str) -> str:
     # 手入力の topic はそのまま通す（AUTO時の処理は run_all 内で実施）
     return arg_topic
-    
+
 # ───────────────────────────────────────────────
 # クリーニング・バリデーション共通
 # ───────────────────────────────────────────────
@@ -139,16 +134,6 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
         t = t[:end]
     return t
 
-
-# 既存: _clean_sub_line の下あたりに追加
-def _clean_sub_line_hook(text: str, lang_code: str, max_sents: int = 2, max_len: int = 120) -> str:
-    t = _clean_strict(text).replace("\n", " ").strip()
-    ends = list(_SENT_END.finditer(t))  # [。.!?！？] のマッチ一覧
-    if len(ends) >= max_sents:
-        t = t[:ends[max_sents-1].end()]
-    if len(t) > max_len:
-        t = t[:max_len].rstrip(" .、。!！?？") + "…"
-    return t
 # ───────────────────────────────────────────────
 # 翻訳の強化（例文用）
 # ───────────────────────────────────────────────
@@ -170,28 +155,13 @@ def _needs_retranslate(output: str, src_lang: str, target_lang: str, original: s
         return True
     return False
 
-def translate_sentence_strict(
-    sentence: str, 
-    src_lang: str, 
-    target_lang: str,
-    max_sents: int = 1,          # ★ 追加：許可する文数（既定=1）
-    max_len: int = 120           # ★ 追加：最大長トリム
-) -> str:
+def translate_sentence_strict(sentence: str, src_lang: str, target_lang: str) -> str:
     try:
         first = translate(sentence, target_lang)
     except Exception:
         first = ""
-
-    def _final_clean(s: str) -> str:
-        # ★ 文数=1なら従来の1文クリーニング、2以上ならフック専用の多文クリーニング
-        if max_sents == 1:
-            return _clean_sub_line(s, target_lang)
-        else:
-            return _clean_sub_line_hook(s, target_lang, max_sents=max_sents, max_len=max_len)
-
     if not _needs_retranslate(first, src_lang, target_lang, sentence):
-        return _final_clean(first)
-
+        return _clean_sub_line(first, target_lang)
     try:
         rsp = GPT.chat.completions.create(
             model="gpt-4o-mini",
@@ -200,16 +170,21 @@ def translate_sentence_strict(
                 "content":(
                     f"Translate from {LANG_NAME.get(src_lang,'source language')} "
                     f"to {LANG_NAME.get(target_lang,'target language')}.\n"
-                    "Return ONLY the translation. No explanations, no quotes, no extra symbols.\n\n"
+                    "Return ONLY the translation as a single sentence. "
+                    "No explanations, no quotes, no extra symbols.\n\n"
                     f"Text: {sentence}"
                 )
             }],
             temperature=0.0, top_p=1.0
         )
         out = (rsp.choices[0].message.content or "").strip()
-        return _final_clean(out)
+        out = _clean_sub_line(out, target_lang)
+        if out:
+            return out
     except Exception:
-        return _final_clean(sentence)
+        pass
+    return _clean_sub_line(sentence, target_lang)
+
 # ───────────────────────────────────────────────
 # ラングエージルール
 # ───────────────────────────────────────────────
@@ -904,43 +879,30 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    # === フックを先頭に入れる（字幕はここでは入れない） ===
-    hook_text = None
-    hook_offset = 0
-    if HOOK_ENABLE:
-        theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
-        pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
-        try:
-            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
-        except Exception:
-            hook_text = None
-        if hook_text:
-            valid_dialogue.insert(0, ("N", hook_text))
-            hook_offset = 1
-    # === ここまで追加 ===
-
-    # ✅ 全行ループ（HOOK_ENABLE ブロックの外・関数内）
     for i, (spk, line) in enumerate(valid_dialogue, 1):
-        # フック行だけは特別に role_idx = -1（“文”扱い）
-        if hook_offset == 1 and i == 1:
-            role_idx = -1
-        else:
-            role_idx = (i - 1 - hook_offset) % 3
+        role_idx = (i - 1) % 3
 
-        # ----- TTS（全行）-----
         tts_line = line
         if audio_lang == "ja":
-            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            if role_idx == 2:
+                # ── 例文（日本語）：かっこ除去＋終止保証＋必要なら“かな読み”に変換 ──
                 base_ex = _PARENS_JA.sub(" ", tts_line).strip()
                 base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
+
                 do_kana = False
                 if JA_EX_READING == "on":
                     do_kana = True
                 elif JA_EX_READING == "auto":
                     if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
                         do_kana = True
-                tts_line = (_kana_reading_sentence(base_ex) or base_ex) if do_kana else base_ex
+
+                if do_kana:
+                    yomi_ex = _kana_reading_sentence(base_ex)
+                    tts_line = yomi_ex or base_ex
+                else:
+                    tts_line = base_ex
             else:
+                # ── 単語（日本語）：漢字のみ語は“かな読み”、終止付与で抑揚安定 ──
                 if _KANJI_ONLY.fullmatch(line):
                     yomi = _kana_reading(line)
                     if yomi:
@@ -948,38 +910,18 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                 base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
                 tts_line = base + "。" if len(base) >= 2 else base
         else:
-            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            # ── 非日本語：例文のみ終止保証 ──
+            if role_idx == 2:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
         out_audio = TEMP / f"{i:02d}.wav"
-        style_for_tts = HOOK_STYLE if role_idx == -1 else ("serious" if audio_lang == "ja" else "neutral")
+        style_for_tts = "serious" if audio_lang == "ja" else "neutral"
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # ----- 字幕（全行）-----
-# ----- 字幕（全行）-----
+        # ── 字幕（原文 or 翻訳） ──
         for r, lang in enumerate(subs):
-            # ★ フック行（role_idx == -1）だけは「2文まで」許可する
-            if role_idx == -1:
-                if lang == audio_lang:
-                    sub_rows[r].append(_clean_sub_line_hook(line, lang))
-                else:
-                    try:
-                        # （修正後）フック行の第二言語だけ2文まで許可
-                        trans = translate_sentence_strict(
-                            line,
-                            src_lang=audio_lang,
-                            target_lang=lang,
-                            max_sents=2,      # ★ 2文まで保持
-                            max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
-                        )
-                    except Exception:
-                        trans = line
-                    sub_rows[r].append(_clean_sub_line_hook(trans, lang))
-                continue
-        
-            # ← ここから下は従来どおり（単語/例文）
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))
             else:
@@ -998,19 +940,10 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             theme=theme, example=example_ctx, pos_hint=pos_hint
                         )
                     else:
-                        # （修正後）
-                        trans = translate_sentence_strict(
-                            line,
-                            src_lang=audio_lang,
-                            target_lang=lang,
-                            max_sents=1,      
-                            max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
-                        )
+                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
                 except Exception:
                     trans = line
                 sub_rows[r].append(_clean_sub_line(trans, lang))
-
-    # 🔽🔽🔽 ここからは “ループの外” に置く（重要）🔽🔽🔽
 
     # 単純結合 → 整音 → mp3
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
@@ -1020,7 +953,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     new_durs = _concat_with_gaps(audio_parts, gap_ms=gap_ms, pre_ms=pre_ms, min_ms=min_ms)
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
-    
+
     # ───────────────── 背景画像（必ず作る） ─────────────────
     bg_png = TEMP / "bg.png"
     try:
@@ -1181,18 +1114,6 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     _try_upload_with_fallbacks()
 
-def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
-    """
-    最小実装：与えたテーマから、その言語向けに n 語を選ぶ。
-    実体は _gen_vocab_list_from_spec を流用。
-    """
-    spec = {
-        "theme": theme,
-        "context": _make_trend_context(theme, lang_code),
-        "count": n,
-    }
-    return _gen_vocab_list_from_spec(spec, lang_code)
-    
 # ───────────────────────────────────────────────
 def run_all(topic, turns, privacy, do_upload, chunk_size):
     """

@@ -41,7 +41,8 @@ def _maybe_translate(text: str, lang: str) -> str:
         return text
     if lang != "en" and re.search(r"[A-Za-z]", text):
         try:
-            return translate(text, lang)
+            out = (translate(text, lang) or "").strip()
+            return out or text
         except Exception:
             return text
     return text

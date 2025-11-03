@@ -2,6 +2,7 @@
 
 import re
 from typing import Optional
+from translate import translate  # ★ 追加：既存の翻訳関数を利用
 
 # 今回の音声言語は en / ja / ko / pt をサポート
 _SUPPORTED = {"en", "ja", "ko", "pt"}
@@ -34,6 +35,17 @@ TPL = {
     ],
 }
 
+def _maybe_translate(text: str, lang: str) -> str:
+    """英字が残っている場合のみ、既存の translate() で目標言語へ翻訳"""
+    if not text:
+        return text
+    if lang != "en" and re.search(r"[A-Za-z]", text):
+        try:
+            return translate(text, lang)
+        except Exception:
+            return text
+    return text
+
 def _parse_theme(theme: str) -> tuple[str, str]:
     """
     "functional – scene" 形式を想定（en dash/ハイフン両対応）。
@@ -55,6 +67,7 @@ def _parse_theme(theme: str) -> tuple[str, str]:
 def _mini(functional: str, scene: str, lang: str) -> tuple[str, str]:
     """
     画面で読ませやすい短縮説明（mini）と scene 表示用ラベルを返す
+    （辞書で補えない＝英語が残った場合は _maybe_translate で確実にローカライズ）
     """
     mapping_en = {
         "polite requests": "polite requests",
@@ -86,6 +99,11 @@ def _mini(functional: str, scene: str, lang: str) -> tuple[str, str]:
             "hotel check-in": "ホテルのチェックイン",
             "asking for directions": "道の聞き方",
         }.get(s_en, s_en)
+
+        # ★ 英字が残っていたら翻訳でクリーンアップ
+        f = _maybe_translate(f, lang)
+        s = _maybe_translate(s, lang)
+
         mini = f if len(f) <= len(s) else s
         return mini or "実用フレーズ", s or "場面"
 
@@ -104,6 +122,11 @@ def _mini(functional: str, scene: str, lang: str) -> tuple[str, str]:
             "hotel check-in": "호텔 체크인",
             "asking for directions": "길 묻기",
         }.get(s_en, s_en)
+
+        # ★ 英字が残っていたら翻訳
+        f = _maybe_translate(f, lang)
+        s = _maybe_translate(s, lang)
+
         mini = f if len(f) <= len(s) else s
         return mini or "실용 표현", s or "상황"
 
@@ -122,10 +145,15 @@ def _mini(functional: str, scene: str, lang: str) -> tuple[str, str]:
             "hotel check-in": "check-in no hotel",
             "asking for directions": "pedir direções",
         }.get(s_en, s_en)
+
+        # ★ 英字が残っていたら翻訳
+        f = _maybe_translate(f, lang)
+        s = _maybe_translate(s, lang)
+
         mini = f if len(f) <= len(s) else s
         return mini or "frases úteis", s or "situação"
 
-    # default en
+    # default en（英語はそのまま）
     mini = f_en if len(f_en) <= len(s_en) else s_en
     return mini or "everyday phrases", s_en or "a simple situation"
 

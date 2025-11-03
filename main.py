@@ -884,105 +884,86 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    # === ここから追加：冒頭フックを先頭に入れる（字幕も先頭に入れる） ===
-    hook_text = None
-    hook_offset = 0
-    if HOOK_ENABLE:
-        theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
-        pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
-        try:
-            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
-        except Exception:
-            hook_text = None
-    
-        if hook_text:
-            # 再生順の先頭に来るよう、valid_dialogue の最初に入れる
-            valid_dialogue.insert(0, ("N", hook_text))
-            hook_offset = 1
-    
-            # 字幕の先頭にもフック行を入れる（翻訳は「文」扱い）
-            for r, lang in enumerate(subs):
-                if lang == audio_lang:
-                    sub_rows[r].insert(0, _clean_sub_line(hook_text, lang))
-                else:
-                    try:
-                        trans_hook = translate_sentence_strict(hook_text, src_lang=audio_lang, target_lang=lang)
-                    except Exception:
-                        trans_hook = hook_text
-                    sub_rows[r].insert(0, _clean_sub_line(trans_hook, lang))
-    # === ここまで追加 ===
+# === フックを先頭に入れる（字幕はここでは入れない） ===
+hook_text = None
+hook_offset = 0
+if HOOK_ENABLE:
+    theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
+    pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
+    try:
+        hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
+    except Exception:
+        hook_text = None
+    if hook_text:
+        valid_dialogue.insert(0, ("N", hook_text))
+        hook_offset = 1
+# === ここまで追加 ===
 
-        for i, (spk, line) in enumerate(valid_dialogue, 1):
-            # フックがあると 3行ブロックが1つズレるので補正
-            # ・フック行（i == 1 かつ hook_offset == 1）は role_idx = -1 として特別扱い
-            if hook_offset == 1 and i == 1:
-                role_idx = -1   # フック行（文扱い）
-            else:
-                role_idx = (i - 1 - hook_offset) % 3
+# ✅ ここからは常にループ（HOOK_ENABLEの中に入れないこと！）
+for i, (spk, line) in enumerate(valid_dialogue, 1):
+    # フック行だけは特別に role_idx = -1（“文”扱い）
+    if hook_offset == 1 and i == 1:
+        role_idx = -1
+    else:
+        role_idx = (i - 1 - hook_offset) % 3
 
-        tts_line = line
-        if audio_lang == "ja":
-            if role_idx == 2:
-                # ── 例文（日本語）：かっこ除去＋終止保証＋必要なら“かな読み”に変換 ──
-                base_ex = _PARENS_JA.sub(" ", tts_line).strip()
-                base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
-
-                do_kana = False
-                if JA_EX_READING == "on":
+    # ----- TTS（全行）-----
+    tts_line = line
+    if audio_lang == "ja":
+        if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            base_ex = _PARENS_JA.sub(" ", tts_line).strip()
+            base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
+            do_kana = False
+            if JA_EX_READING == "on":
+                do_kana = True
+            elif JA_EX_READING == "auto":
+                if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
                     do_kana = True
-                elif JA_EX_READING == "auto":
-                    if 2 <= len(base_ex) <= JA_EX_READING_MAX_LEN and _kanji_ratio(base_ex) >= JA_EX_READING_KANJI_RATIO:
-                        do_kana = True
-
-                if do_kana:
-                    yomi_ex = _kana_reading_sentence(base_ex)
-                    tts_line = yomi_ex or base_ex
-                else:
-                    tts_line = base_ex
-            else:
-                # ── 単語（日本語）：漢字のみ語は“かな読み”、終止付与で抑揚安定 ──
-                if _KANJI_ONLY.fullmatch(line):
-                    yomi = _kana_reading(line)
-                    if yomi:
-                        tts_line = yomi
-                base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
-                tts_line = base + "。" if len(base) >= 2 else base
+            tts_line = (_kana_reading_sentence(base_ex) or base_ex) if do_kana else base_ex
         else:
-            # ── 非日本語：例文のみ終止保証 ──
-            if role_idx == 2:
-                tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
+            if _KANJI_ONLY.fullmatch(line):
+                yomi = _kana_reading(line)
+                if yomi:
+                    tts_line = yomi
+            base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
+            tts_line = base + "。" if len(base) >= 2 else base
+    else:
+        if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
-        out_audio = TEMP / f"{i:02d}.wav"
-        style_for_tts = "serious" if audio_lang == "ja" else "neutral"
-        speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
-        audio_parts.append(out_audio)
-        tts_lines.append(tts_line)
+    out_audio = TEMP / f"{i:02d}.wav"
+    style_for_tts = HOOK_STYLE if role_idx == -1 else ("serious" if audio_lang == "ja" else "neutral")
+    speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
+    audio_parts.append(out_audio)
+    tts_lines.append(tts_line)
 
-        # ── 字幕（原文 or 翻訳） ──
-        for r, lang in enumerate(subs):
-            if lang == audio_lang:
-                sub_rows[r].append(_clean_sub_line(line, lang))
-            else:
-                try:
-                    if role_idx in (0, 1):
-                        example_ctx = _example_for_index(valid_dialogue, i-1)
-                        pos_hint = None
-                        if isinstance(spec, dict) and spec.get("pos"):
-                            pos_hint = ",".join(spec["pos"])
-                        elif audio_lang == "ja":
-                            _k = _guess_ja_pos(line)
-                            pos_map = {"verb":"verb", "iadj":"adjective", "naadj":"adjective", "noun":"noun"}
-                            pos_hint = pos_map.get(_k, None)
-                        trans = translate_word_context(
-                            word=line, target_lang=lang, src_lang=audio_lang,
-                            theme=theme, example=example_ctx, pos_hint=pos_hint
-                        )
-                    else:
-                        trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
-                except Exception:
-                    trans = line
-                sub_rows[r].append(_clean_sub_line(trans, lang))
-
+    # ----- 字幕（全行）-----
+    for r, lang in enumerate(subs):
+        if lang == audio_lang:
+            sub_rows[r].append(_clean_sub_line(line, lang))
+        else:
+            try:
+                if role_idx in (0, 1):
+                    # 単語行 → 1語に確定する辞書訳
+                    example_ctx = _example_for_index(valid_dialogue, i-1)
+                    pos_hint = None
+                    if isinstance(spec, dict) and spec.get("pos"):
+                        pos_hint = ",".join(spec["pos"])
+                    elif audio_lang == "ja":
+                        _k = _guess_ja_pos(line)
+                        pos_map = {"verb":"verb", "iadj":"adjective", "naadj":"adjective", "noun":"noun"}
+                        pos_hint = pos_map.get(_k, None)
+                    trans = translate_word_context(
+                        word=line, target_lang=lang, src_lang=audio_lang,
+                        theme=theme, example=example_ctx, pos_hint=pos_hint
+                    )
+                else:
+                    # 例文 or フック → 文翻訳
+                    trans = translate_sentence_strict(line, src_lang=audio_lang, target_lang=lang)
+            except Exception:
+                trans = line
+            sub_rows[r].append(_clean_sub_line(trans, lang))
+            
     # 単純結合 → 整音 → mp3
     gap_ms = GAP_MS_JA if audio_lang == "ja" else GAP_MS
     pre_ms = PRE_SIL_MS_JA if audio_lang == "ja" else PRE_SIL_MS

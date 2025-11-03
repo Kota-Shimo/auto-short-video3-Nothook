@@ -1003,7 +1003,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                             line,
                             src_lang=audio_lang,
                             target_lang=lang,
-                            max_sents=2,      # ★ 2文まで保持
+                            max_sents=1,      # ★ 2文まで保持
                             max_len=120       # ★ 長すぎる時は末尾を「…」でトリム（必要に応じて150などに上げてもOK）
                         )
                 except Exception:

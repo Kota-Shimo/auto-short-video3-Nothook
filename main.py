@@ -8,9 +8,10 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: ラングエージェルール（厳密モノリンガル・記号/注釈禁止）を例文生成に統合。
 - 追加: 単語2行の字幕は「例文＋テーマ＋品詞ヒント」で1語に確定する文脈訳へ切替。
 - 追加: 日本語の例文行も“かな読み”に変換して読み上げ可能（字幕は原文のまま）。
+- 追加: 語彙バリエーション最適化（直近履歴ペナルティ＋再生成）で「同じ単語ばかり」を回避。
 """
 
-import argparse, logging, re, json, subprocess, os, sys
+import argparse, logging, re, json, subprocess, os, sys, random, time
 from datetime import datetime
 from pathlib import Path
 from shutil import rmtree
@@ -29,9 +30,9 @@ from upload_youtube import upload
 from topic_picker   import pick_by_content_type
 # ★ トレンド取得モジュール（Google News RSS）
 from trend_fetcher  import get_trend_candidates
-import datetime as dt   # ← 無ければこの1行を追加（UTC日付で安定選択に使う）
+import datetime as dt
 
-from hook import generate_hook     # ← 追加
+from hook import generate_hook
 
 HOOK_ENABLE = os.getenv("HOOK_ENABLE", "1") == "1"
 HOOK_STYLE  = os.getenv("HOOK_STYLE", "energetic")
@@ -47,12 +48,9 @@ MIN_UTTER_MS = int(os.getenv("MIN_UTTER_MS", "1000"))
 # ★ 日本語だけ個別に調整できるENV（未設定なら通常値を継承）
 GAP_MS_JA       = int(os.getenv("GAP_MS_JA", str(GAP_MS)))
 PRE_SIL_MS_JA   = int(os.getenv("PRE_SIL_MS_JA", str(PRE_SIL_MS)))
-MIN_UTTER_MS_JA = int(os.getenv("MIN_UTTER_MS_JA", "800"))  # デフォ軽め短縮
+MIN_UTTER_MS_JA = int(os.getenv("MIN_UTTER_MS_JA", "800"))
 
-# ★ 例文の“かな読み”トグル（new）
-#   off  : かな読みしない（原文のまま）
-#   on   : 常にかな読み
-#   auto : 文長と漢字率で自動（推奨）
+# ★ 例文の“かな読み”トグル
 JA_EX_READING = os.getenv("JA_EX_READING", "auto").lower()  # "auto" | "on" | "off"
 JA_EX_READING_KANJI_RATIO = float(os.getenv("JA_EX_READING_KANJI_RATIO", "0.25"))
 JA_EX_READING_MAX_LEN     = int(os.getenv("JA_EX_READING_MAX_LEN", "60"))
@@ -60,6 +58,18 @@ JA_EX_READING_MAX_LEN     = int(os.getenv("JA_EX_READING_MAX_LEN", "60"))
 # 生成時の温度（必要なら環境変数で上書き）
 EX_TEMP_DEFAULT = float(os.getenv("EX_TEMP", "0.35"))   # 例文
 LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト
+
+# ── バリエーション設定（ENVで上書き可）
+VAR_RECENT_VIDEOS      = int(os.getenv("VAR_RECENT_VIDEOS", "30"))    # 直近何本ぶんを参照
+VAR_RECENT_DAYS        = int(os.getenv("VAR_RECENT_DAYS", "7"))       # 直近何日ぶんを参照
+VAR_MAX_OVERLAP_RATIO  = float(os.getenv("VAR_MAX_OVERLAP_RATIO", "0.34"))  # 新語群と直近語彙の重複率上限
+VAR_REGEN_ATTEMPTS     = int(os.getenv("VAR_REGEN_ATTEMPTS", "3"))    # 高重複時の再生成回数
+VAR_TEMP_BUMP          = float(os.getenv("VAR_TEMP_BUMP", "0.10"))    # 再生成ごとの温度加算
+VAR_RECENT_PENALTY     = float(os.getenv("VAR_RECENT_PENALTY", "0.65"))  # 最近語の重み係数（小さいほど当たりにくい）
+VAR_HISTORY_FILE       = os.getenv("VAR_HISTORY_FILE", str((OUTPUT / "vocab_history.json").resolve()))
+
+# 軽いシード分散（被り低減）
+random.seed(int(time.time() // 3600) ^ hash((os.getenv("TARGET_ACCOUNT",""), os.getpid())))
 
 LANG_NAME = {
     "en": "English", "pt": "Portuguese", "id": "Indonesian",
@@ -95,7 +105,6 @@ def _infer_title_lang(audio_lang: str, subs: list[str], combo: dict) -> str:
     return audio_lang
 
 def resolve_topic(arg_topic: str) -> str:
-    # 手入力の topic はそのまま通す（AUTO時の処理は run_all 内で実施）
     return arg_topic
 
 # ───────────────────────────────────────────────
@@ -139,10 +148,10 @@ def _clean_sub_line(text: str, lang_code: str) -> str:
         t = t[:end]
     return t
 
-# 既存: _clean_sub_line の下あたりに追加（フックは2文まで許容）
+# フック行（2文まで許容）
 def _clean_sub_line_hook(text: str, lang_code: str, max_sents: int = 2, max_len: int = 120) -> str:
     t = _clean_strict(text).replace("\n", " ").strip()
-    ends = list(_SENT_END.finditer(t))  # [。.!?！？] のマッチ一覧
+    ends = list(_SENT_END.finditer(t))
     if len(ends) >= max_sents:
         t = t[:ends[max_sents-1].end()]
     if len(t) > max_len:
@@ -150,7 +159,7 @@ def _clean_sub_line_hook(text: str, lang_code: str, max_sents: int = 2, max_len:
     return t
 
 # ───────────────────────────────────────────────
-# 英語の機能語（モーダル等）を除外するためのユーティリティ
+# 英語の機能語（モーダル等）排除 & 内容語抽出
 # ───────────────────────────────────────────────
 MODAL_STOPWORDS_EN = {
     "would","could","should","may","might","can","must","shall","will",
@@ -194,7 +203,7 @@ def pick_content_token(line: str, lang_code: str) -> str:
             return low  # 英語は小文字に揃える
         return ""
 
-    # 非英語：軽フィルタ（空白区切り→記号/数字除外）
+    # 非英語：軽フィルタ
     for tok in raw.split():
         t = tok.strip(".,!?;:()[]{}，、。！？・／／\\|\"'“”‘’")
         if not t:
@@ -333,13 +342,9 @@ def _gen_example_sentence(
     if diff not in ("A1", "A2", "B1", "B2"):
         diff = ""
 
-    # ーー トレンド判定（context_hint に [TREND] が入る仕様）ーー
     is_trend = "[TREND]" in ctx
-
-    # ーー ルール文字列（そのまま）ーー
     rules = _lang_rules(lang_code)
 
-    # ーー CEFR 説明は既存通り ーー
     cefr_guides = {
         "A1": ("Use very simple, high-frequency words. Present tense. One clause only. No subclauses, no passive, no numbers or dates. Keep it short and concrete."),
         "A2": ("Use common everyday words. Prefer present or simple past. One short clause (or two joined by 'and' at most). Avoid complex relative clauses or conditionals."),
@@ -436,6 +441,90 @@ def _gen_example_sentence(
     else:
         return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
 
+# ───────────────────────────────────────────────
+# バリエーション履歴ユーティリティ
+# ───────────────────────────────────────────────
+def _load_history():
+    try:
+        p = Path(VAR_HISTORY_FILE)
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {"items": []}  # { items: [ {ts, audio_lang, theme, words:[...]} , ...] }
+
+def _save_history(entry):
+    data = _load_history()
+    data["items"].append(entry)
+    if len(data["items"]) > 1000:
+        data["items"] = data["items"][-1000:]
+    try:
+        Path(VAR_HISTORY_FILE).parent.mkdir(parents=True, exist_ok=True)
+        Path(VAR_HISTORY_FILE).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        logging.warning(f"[VARIETY] failed to save history: {e}")
+
+def _recent_words(audio_lang: str):
+    """直近 VAR_RECENT_VIDEOS 本・VAR_RECENT_DAYS 日の語だけ抽出"""
+    data = _load_history()
+    if not data.get("items"):
+        return set(), []
+    now = time.time()
+    day_sec = 86400
+    picked = []
+    for item in reversed(data["items"]):
+        if len(picked) >= VAR_RECENT_VIDEOS:
+            break
+        if (now - item.get("ts", now)) > VAR_RECENT_DAYS * day_sec:
+            continue
+        if item.get("audio_lang") != audio_lang:
+            continue
+        picked.append(item)
+    flat = []
+    for it in picked:
+        flat.extend(it.get("words", []))
+    return set(flat), picked
+
+def _diversify_words(candidates: list[str], audio_lang: str, need_n: int) -> list[str]:
+    """最近よく出た語を“弱く”しながらランダム選抜（完全除外はしない）"""
+    recent_set, _ = _recent_words(audio_lang)
+    if not candidates:
+        return []
+    weighted = []
+    for w in candidates:
+        base = 1.0
+        if w in recent_set:
+            base *= VAR_RECENT_PENALTY
+        jitter = 0.85 + random.random() * 0.3  # 0.85〜1.15
+        weighted.append((w, base * jitter))
+    pool = weighted[:]
+    out = []
+    while pool and len(out) < need_n:
+        total = sum(wt for _, wt in pool)
+        r = random.random() * (total if total > 0 else 1)
+        acc = 0
+        for i, (w, wt) in enumerate(pool):
+            acc += wt
+            if acc >= r:
+                out.append(w)
+                pool.pop(i)
+                break
+    if len(out) < need_n:
+        remain = [w for (w, _) in pool]
+        random.shuffle(remain)
+        out += remain[: need_n - len(out)]
+    return out[:need_n]
+
+def _overlap_ratio(new_words: list[str], audio_lang: str) -> float:
+    recent_set, _ = _recent_words(audio_lang)
+    if not new_words:
+        return 0.0
+    inter = sum(1 for w in new_words if w in recent_set)
+    return inter / max(1, len(new_words))
+
+# ───────────────────────────────────────────────
+# 語彙リスト生成（spec対応＋バリエーション層）
+# ───────────────────────────────────────────────
 def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     n   = int(spec.get("count", int(os.getenv("VOCAB_WORDS", "6"))))
     th  = spec.get("theme") or "general vocabulary"
@@ -448,7 +537,6 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
 
     theme_for_prompt = translate(th, lang_code) if lang_code != "en" else th
 
-    # ▼ プロンプト：内容語を強制。モーダル/機能語/固有名詞などを禁止
     lines = []
     lines.append(f"You are selecting {n} HIGH-FREQUENCY **content words** for the topic: {theme_for_prompt}.")
     lines.append("Return EXACTLY one token per line (no numbering, no punctuation).")
@@ -498,8 +586,8 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     except Exception:
         content = ""
 
-    # ▼ 出力行から“内容語”だけ抽出（英語はモーダル・機能語を強制排除）
-    words = []
+    # LLM出力 → 内容語抽出
+    base_words = []
     for line in content.splitlines():
         ln = (line or "").strip()
         if not ln:
@@ -511,21 +599,59 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         if not w:
             continue
 
-        # ★ トレンド時の簡易フィルタ（既存方針）
         if is_trend:
             if re.search(r"[#@/0-9]", w):
                 continue
             if lang_code == "en" and len(w) >= 2 and w[0].isupper() and w[1:].islower():
-                # 英語で先頭大文字＝固有名詞っぽい
                 continue
 
-        if w not in words:
-            words.append(w)
+        if w not in base_words:
+            base_words.append(w)
 
-    if len(words) >= n:
-        return words[:n]
+    # バリエーション層：最近語を弱めて抽出
+    diversified = _diversify_words(base_words, lang_code, n)
+
+    # 重複率が高すぎるときは温度を上げて再生成し、再サンプリング
+    attempts = 0
+    local_list_temp = LIST_TEMP
+    while _overlap_ratio(diversified, lang_code) > VAR_MAX_OVERLAP_RATIO and attempts < VAR_REGEN_ATTEMPTS:
+        attempts += 1
+        try:
+            rsp = GPT.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role":"user","content":prompt}],
+                temperature=min(0.9, local_list_temp + VAR_TEMP_BUMP),
+                top_p=0.9, presence_penalty=0, frequency_penalty=0,
+            )
+            content2 = (rsp.choices[0].message.content or "")
+        except Exception:
+            break
+
+        words2 = []
+        for line in content2.splitlines():
+            ln = (line or "").strip()
+            if not ln:
+                continue
+            ln = re.sub(r"^\d+[\).]?\s*", "", ln)
+            ln = re.sub(r"[，、。.!?！？]+$", "", ln)
+            w2 = pick_content_token(ln, lang_code)
+            if w2 and w2 not in words2:
+                words2.append(w2)
+
+        merged = []
+        seen = set()
+        for w in (base_words + words2):
+            if w not in seen:
+                merged.append(w); seen.add(w)
+        diversified = _diversify_words(merged, lang_code, n)
+        local_list_temp += VAR_TEMP_BUMP
+
+    if len(diversified) >= n:
+        return diversified[:n]
+
+    # 足りない分はフォールバック少量
     fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
-    return (words + [w for w in fallback if w not in words])[:n]
+    return (diversified + [w for w in fallback if w not in diversified])[:n]
 
 # ───────────────────────────────────────────────
 # ★ spec 正規化＋spec対応の語彙生成
@@ -620,10 +746,6 @@ def _example_for_index(valid_dialogue: list[tuple[str, str]], idx0: int) -> str:
     return ""
 
 def _safeify_trend_title(theme: str, lang: str) -> str:
-    """
-    トレンドテーマが政治・戦争・事件・医療などの場合、
-    安全な教育コンテンツ向けタイトルに置き換える。
-    """
     risk_words = [
         "war","attack","sex","murder","killed","politics","election","vote","president",
         "trump","biden","putin","israel","gaza","palestine","covid","vaccine","virus",
@@ -687,16 +809,7 @@ def translate_word_context(word: str, target_lang: str, src_lang: str, theme: st
 # メタ生成（タイトル言語に統一）
 # ───────────────────────────────────────────────
 def make_title(theme, title_lang: str, audio_lang_for_label: str | None = None):
-    """
-    交互タイトル生成（環境変数不要・実行ごとにトグル）:
-      - トグル=0: 既存クラシック生成（GPT生成）
-      - トグル=1: 固定タグ「約1分」系を付与（各言語対応）
-    トグル状態は TEMP/_title_toggle.txt に保存して毎回反転。
-    """
     import re
-    import random
-    from pathlib import Path
-
     ONE_MIN_TAG = {
         "ja": " 1分学習",
         "en": " 1 min vocabulary",
@@ -807,7 +920,6 @@ def _make_trend_context(theme: str, lang_code: str) -> str:
     theme = (theme or "").strip()
     if not theme:
         return ""
-
     if lang_code == "ja":
         return (
             f"今この話題（{theme}）について友達と雑談。予定や感想、場所や時間、チケット、混雑、"
@@ -846,7 +958,6 @@ def _make_trend_context(theme: str, lang_code: str) -> str:
     return f"Casual talk about '{theme}' with everyday words (plans, opinions, tickets, time, place)."
 
 def make_tags(theme, audio_lang, subs, title_lang):
-    """言語別に最適化された多言語タグを生成"""
     LOCALIZED_TAGS = {
         "ja": ["語彙", "単語学習", "リスニング練習", "スピーキング練習", "字幕"],
         "en": ["vocabulary", "language learning", "speaking practice", "listening practice", "subtitles"],
@@ -854,7 +965,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
         "fr": ["vocabulaire", "apprentissage des langues", "pratique orale", "écoute", "sous-titres"],
         "pt": ["vocabulário", "aprendizado de idiomas", "prática de fala", "prática auditiva", "legendas"],
         "id": ["kosakata", "belajar bahasa", "latihan berbicara", "latihan mendengarkan", "subtitle"],
-        "ko": ["어휘", "언어 학습", "말하기 연습", "듣기 연습", "자막"],
+        "ko": ["어휘", "언어 学습", "말하기 연습", "듣기 연습", "자막"],
     }
 
     base_tags = LOCALIZED_TAGS.get(title_lang, LOCALIZED_TAGS["en"]).copy()
@@ -927,6 +1038,17 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             vocab_words = _gen_vocab_list(theme, audio_lang, words_count)
             local_context = context_hint or ""
 
+    # 直近履歴保存（被り抑制の学習用）
+    try:
+        _save_history({
+            "ts": time.time(),
+            "audio_lang": audio_lang,
+            "theme": theme,
+            "words": list(dict.fromkeys(vocab_words)),  # 重複除去して順序維持
+        })
+    except Exception as e:
+        logging.warning(f"[VARIETY] history save failed: {e}")
+
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []
     for w in vocab_words:
@@ -938,7 +1060,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    # === フックを先頭に入れる（字幕はここでは入れない） ===
+    # === フック ===
     hook_text = None
     hook_offset = 0
     if HOOK_ENABLE:
@@ -952,17 +1074,17 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             valid_dialogue.insert(0, ("N", hook_text))
             hook_offset = 1
 
-    # ✅ 全行ループ
+    # TTS & 字幕
     for i, (spk, line) in enumerate(valid_dialogue, 1):
         if hook_offset == 1 and i == 1:
-            role_idx = -1   # フック
+            role_idx = -1
         else:
             role_idx = (i - 1 - hook_offset) % 3
 
-        # ----- TTS（全行）-----
+        # ----- TTS -----
         tts_line = line
         if audio_lang == "ja":
-            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            if role_idx in (2, -1):
                 base_ex = _PARENS_JA.sub(" ", tts_line).strip()
                 base_ex = _ensure_period_for_sentence(base_ex, audio_lang)
                 do_kana = False
@@ -980,7 +1102,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
                 base = re.sub(r"[。！？!?]+$", "", tts_line).strip()
                 tts_line = base + "。" if len(base) >= 2 else base
         else:
-            if role_idx in (2, -1):  # 例文 or フック → 文扱い
+            if role_idx in (2, -1):
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
         out_audio = TEMP / f"{i:02d}.wav"
@@ -989,9 +1111,9 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # ----- 字幕（全行）-----
+        # ----- 字幕 -----
         for r, lang in enumerate(subs):
-            if role_idx == -1:  # フック → 2文まで許容
+            if role_idx == -1:
                 if lang == audio_lang:
                     sub_rows[r].append(_clean_sub_line_hook(line, lang))
                 else:
@@ -1046,7 +1168,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # ───────────────── 背景画像（必ず作る） ─────────────────
+    # 背景画像
     bg_png = TEMP / "bg.png"
     try:
         theme_en = translate(theme, "en")
@@ -1076,7 +1198,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         except Exception as e:
             raise RuntimeError(f"Failed to prepare bg.png fallback: {e}")
 
-    # ───────────────── lines.json（背景生成後に作成） ─────────────────
+    # lines.json
     lines_data = []
     for i, ((spk, txt), dur) in enumerate(zip(valid_dialogue, new_durs)):
         row = [spk]
@@ -1086,7 +1208,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         lines_data.append(row)
     (TEMP/"lines.json").write_text(json.dumps(lines_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # デバッグ出力
+    # デバッグ
     try:
         (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
         (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
@@ -1115,7 +1237,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     thumb_lang = subs[1] if len(subs) > 1 else audio_lang
     make_thumbnail(theme, thumb_lang, thumb)
 
-    # 動画生成（前提ファイルの存在チェックつき）
+    # 動画生成
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     final_mp4 = OUTPUT / f"{audio_lang}-{'_'.join(subs)}_{stamp}.mp4"
     final_mp4.parent.mkdir(parents=True, exist_ok=True)
@@ -1207,10 +1329,6 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     _try_upload_with_fallbacks()
 
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:
-    """
-    最小実装：与えたテーマから、その言語向けに n 語を選ぶ。
-    実体は _gen_vocab_list_from_spec を流用。
-    """
     spec = {
         "theme": theme,
         "context": _make_trend_context(theme, lang_code),
@@ -1241,10 +1359,9 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
             spec_for_run = None
             words_env_count = int(os.getenv("VOCAB_WORDS", "6"))
 
-            # ★ AUTO_TREND：第二字幕の言語を優先してトレンドを取得
+            # AUTO_TREND
             if topic.strip().upper() == "AUTO_TREND":
                 try:
-                    from pathlib import Path
                     from topic_picker import build_trend_spec
                     TREND_DIR = TEMP / "trends"
 

@@ -297,7 +297,7 @@ def _lang_rules(lang_code: str) -> str:
     return (
         f"Write entirely in {lang_name}. "
         "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '-', '→', '()', '[]', '<>', and '|'. "
+        "Avoid ASCII symbols like '/', '-', '→', '()", '[]', '<>', and '|'. "
         "No translation glosses, brackets, or country/language mentions."
     )
 
@@ -1103,15 +1103,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     audio_parts, sub_rows = [], [[] for _ in subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
-    # === フック ===
+    # === フック ===（★修正：言語強制＆クリーニングを追加）
     hook_text = None
     hook_offset = 0
     if HOOK_ENABLE:
         theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
         pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
     
-        # 🔹 topic_picker の theme から「視点（誰が誰に）」を推定し、
-        #     hook に渡して最適化。明示したい場合は ENV で上書き可。
+        # topic_picker からの視点ヒント（任意）
         try:
             os.environ["HOOK_SPEAKER"]  = spec.get("speaker", "") if isinstance(spec, dict) else ""
             os.environ["HOOK_LISTENER"] = spec.get("listener", "") if isinstance(spec, dict) else ""
@@ -1124,6 +1123,17 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             hook_text = None
     
         if hook_text:
+            # ★ 音声言語へ強制翻訳（同言語なら無影響）
+            try:
+                hook_text = translate(hook_text, audio_lang)
+            except Exception:
+                pass
+            # ★ 2文まで＆長さ制限のクリーニング
+            hook_text = _clean_sub_line_hook(hook_text, audio_lang, max_sents=2, max_len=120)
+            # ★ 日本語は末尾句点補正
+            if audio_lang == "ja":
+                hook_text = _ensure_period_for_sentence(hook_text, "ja")
+            # 挿入
             valid_dialogue.insert(0, ("N", hook_text))
             hook_offset = 1
 
@@ -1221,13 +1231,12 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # 背景画像
+    # 背景画像（★修正：フックではなく最初の語彙を優先してクエリ決定）
     bg_png = TEMP / "bg.png"
     try:
         theme_en = translate(theme, "en")
     except Exception:
         theme_en = theme
-    first_word = valid_dialogue[0][1] if valid_dialogue else theme
 
     def _is_ascii(s: str) -> bool:
         try:
@@ -1235,10 +1244,12 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         except Exception:
             return False
 
-    if not _is_ascii(first_word or ""):
-        query_for_bg = theme_en or "language learning"
+    # 最初の語彙を優先。非ASCIIなら theme_en にフォールバック
+    first_vocab = vocab_words[0] if vocab_words else ""
+    if first_vocab and _is_ascii(first_vocab):
+        query_for_bg = first_vocab
     else:
-        query_for_bg = first_word or theme_en or "learning"
+        query_for_bg = theme_en or "language learning"
 
     try:
         fetch_bg(query_for_bg, bg_png)

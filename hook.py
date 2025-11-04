@@ -22,6 +22,9 @@ from typing import Optional, Tuple
 
 # ---------------- ユーティリティ ----------------
 
+_ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
+_ASCII_SYMBOLS_RE = re.compile(r"[\/\-\→\(\)\[\]\<\>\|\_]+")
+
 def _limit(text: str, lang: str) -> str:
     try:
         max_en = int(os.getenv("HOOK_MAX_CHARS", "85"))
@@ -38,6 +41,22 @@ def _normalize_spaces(s: str) -> str:
     # 全角記号まわりの軽整形
     s = s.replace(" ，", "，").replace(" 。", "。").replace(" ！", "！").replace(" ？", "？")
     return s
+
+def _enforce_lang_clean(text: str, lang: str) -> str:
+    """
+    audio_lang への統一を徹底：
+      - ja/ko では英字とASCII系の飾り記号を除去（数字は許容）
+      - en/pt はそのまま（テンプレが多言語を含まない前提）
+    """
+    t = (text or "")
+    if lang in ("ja", "ko"):
+        t = _ASCII_WORD_RE.sub("", t)          # 英字の除去
+        t = _ASCII_SYMBOLS_RE.sub(" ", t)      # ASCII記号の抑制
+        t = t.replace("..", "。").replace("!!", "！").replace("??", "？")
+        t = _normalize_spaces(t)
+    else:
+        t = _normalize_spaces(t)
+    return t
 
 def _parse_theme(theme: str) -> Tuple[str, str]:
     """ 'functional – scene' 形式から functional/scene を抽出。片方欠けたら補完。 """
@@ -151,18 +170,28 @@ _ROLE_MAP = {
 
 _REQUESTER_ROLES = {"customer","guest","traveler","patient","member","friend","colleague"}
 
-def _infer_roles(theme: str) -> Tuple[str, str]:
+def _infer_roles(theme: str, context: Optional[str]) -> Tuple[str, str]:
     # 明示上書き（ENV）
     sp_env = os.getenv("HOOK_SPEAKER", "").strip()
     ls_env = os.getenv("HOOK_LISTENER", "").strip()
     if sp_env and ls_env:
         return (sp_env, ls_env)
 
-    s = (theme or "").lower()
-    # キーワード優先で推定
+    text = f"{theme or ''} {context or ''}".lower()
+
+    # コンテキストも含めてキーワード優先で推定
     for k, pair in _ROLE_MAP.items():
-        if k in s:
+        if k in text:
             return pair
+
+    # 追加の語感ヒント
+    if any(x in text for x in ("reservation", "check in", "check-in", "front desk")):
+        return ("guest", "receptionist")
+    if any(x in text for x in ("order", "menu", "table")):
+        return ("customer", "waiter")
+    if any(x in text for x in ("latte", "americano", "barista")):
+        return ("customer", "barista")
+
     # デフォルト
     return ("friend", "friend")
 
@@ -255,9 +284,10 @@ def _pick_category(lang: str, pattern_hint: Optional[str], requester: bool) -> s
 
 # ---------------- 公開API ----------------
 
-def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = None) -> str:
+def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = None, context: Optional[str] = None) -> str:
     """
     返り値: 1〜2文の短いフック（字幕側で2文まで許容）
+    ※ main.py から context=... が渡される前提で後方互換（第4引数は任意）
     """
     lang = (audio_lang or "en").lower()
     if lang not in HOOKS:
@@ -266,7 +296,7 @@ def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = Non
     functional, scene = _parse_theme(theme)
     mini, scene_label = _mini_and_scene_label(functional, scene, lang)
 
-    speaker, listener = _infer_roles(theme)
+    speaker, listener = _infer_roles(theme, context)
     requester = speaker in _REQUESTER_ROLES
 
     cat = _pick_category(lang, pattern_hint, requester)
@@ -286,6 +316,8 @@ def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = Non
     if len(with_callout) <= max_lim:
         text = with_callout
 
-    text = _normalize_spaces(text)
+    # 言語統一の強制クリーニング
+    text = _enforce_lang_clean(text, lang)
+    # 長さ最終制御
     text = _limit(text, lang)
     return text

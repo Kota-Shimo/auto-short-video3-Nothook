@@ -12,7 +12,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: テーマ回転（直近テーマの回避）で「同じテーマ連続」を抑制。
 """
 
-import argparse, logging, re, json, subprocess, os, sys, random, time
+import argparse, logging, re, json, subprocess, os, sys, random, time, secrets
 from datetime import datetime
 from pathlib import Path
 from shutil import rmtree
@@ -74,8 +74,8 @@ THEME_RECENT_VIDEOS   = int(os.getenv("THEME_RECENT_VIDEOS", "30"))  # 直近何
 THEME_RECENT_DAYS     = int(os.getenv("THEME_RECENT_DAYS", "7"))     # 直近何日ぶん参照（テーマ）
 THEME_REGEN_ATTEMPTS  = int(os.getenv("THEME_REGEN_ATTEMPTS", "3"))  # AUTO の引き直し最大回数
 
-# 軽いシード分散（被り低減）
-random.seed(int(time.time() // 3600) ^ hash((os.getenv("TARGET_ACCOUNT",""), os.getpid())))
+# 完全ランダム化（毎回違うシード）
+random.seed(secrets.randbits(64))
 
 LANG_NAME = {
     "en": "English", "pt": "Portuguese", "id": "Indonesian",

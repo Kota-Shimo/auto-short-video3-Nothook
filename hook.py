@@ -1,21 +1,19 @@
-# hook.py – YouTube Shorts最適化・決定版（main.py互換）
+# hook.py – YouTube Shorts最適化・決定版（main.py互換・視点自動推定版）
 # 目的:
 #  - 0.5〜1.2秒で「自己投影」させる強フック（Shock/Empathy/Time/Release/Status）
-#  - theme = "functional – scene" から {mini}/{scene} を自動抽出
-#  - pattern_hint（Could I / Do you have… 等）に応じて最適テンプレを自動選択
-#  - 言語: en / ja / ko / pt をネイティブ自然文で生成（記号やスラッシュ多用を回避）
-#  - 長さ制御: 英語系85字、日本語/韓国語90字（ENVで変更可）
+#  - theme から {mini}/{scene} を抽出し、さらに「誰→誰」の視点を自動推定
+#  - pattern_hint（Could I / Do you have… 等）や視点で最適テンプレを自動選択
+#  - 言語: en / ja / ko / pt（自然文・記号多用回避）
+#  - 長さ制御: 英/葡=85字、日本/韓国=90字（ENVで変更可）
 #
 # 使い方（既存のまま）:
 #   from hook import generate_hook
 #   text = generate_hook(theme, audio_lang, pattern_hint)
 #
-# 推奨ENV（任意）:
-#   HOOK_AB=0..4         # 固定カテゴリA/B（未指定なら自動選択）
-#   HOOK_MAX_CHARS=85    # 英語系の最大文字数（ja/koは+5）
-#
-# 字幕側は main.py で hook 行のみ 2文まで許可済み（_clean_sub_line_hook）。
-# ここでは 1〜2文の短文のみ返します。
+# 追加オプション（任意）:
+#   HOOK_AB=0..n           # テンプレカテゴリ固定（未指定なら自動）
+#   HOOK_MAX_CHARS=85      # 英語系の最大文字数（ja/koは+5）
+#   HOOK_SPEAKER/HOOK_LISTENER  # 明示的に視点を上書きしたい場合
 
 import os
 import re
@@ -29,7 +27,7 @@ def _limit(text: str, lang: str) -> str:
         max_en = int(os.getenv("HOOK_MAX_CHARS", "85"))
     except Exception:
         max_en = 85
-    limit = max_en if lang in ("en", "pt") else max_en + 5  # ja/ko やや長めOK
+    limit = max_en if lang in ("en", "pt") else max_en + 5  # ja/ko は少し長めOK
     if len(text) <= limit:
         return text
     t = text[:limit].rstrip(" .、。!？?!")
@@ -37,12 +35,12 @@ def _limit(text: str, lang: str) -> str:
 
 def _normalize_spaces(s: str) -> str:
     s = re.sub(r"\s+", " ", (s or "")).strip()
-    # 日本語まわりは全角記号の周辺を軽く整形
+    # 全角記号まわりの軽整形
     s = s.replace(" ，", "，").replace(" 。", "。").replace(" ！", "！").replace(" ？", "？")
     return s
 
 def _parse_theme(theme: str) -> Tuple[str, str]:
-    """ 'functional – scene' 形式から functional/scene を抽出。どちらか欠けたら補完。 """
+    """ 'functional – scene' 形式から functional/scene を抽出。片方欠けたら補完。 """
     if not theme:
         return ("everyday phrases", "a simple situation")
     parts = [p.strip() for p in re.split(r"[–\-—]", theme, maxsplit=1)]
@@ -54,7 +52,6 @@ def _parse_theme(theme: str) -> Tuple[str, str]:
 
 def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, str]:
     """ 画面に載せやすい短い {mini} と {scene} ラベル（言語別） """
-    # 英語の素朴な基準ラベル
     base_map_en = {
         "polite requests": "polite requests",
         "asking & giving directions": "asking for directions",
@@ -66,6 +63,7 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
         "paying & receipts": "paying and receipts",
         "hotel check-in/out": "hotel check-in",
         "street directions": "asking for directions",
+        "ordering coffee at a cafe": "ordering at a cafe",
     }
     f_en = base_map_en.get(functional.lower(), functional)
     s_en = base_map_en.get(scene.lower(), scene)
@@ -80,11 +78,12 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
         }.get(functional.lower(), functional)
         s = {
             "ordering at a restaurant": "レストラン注文",
+            "ordering at a cafe": "カフェ注文",
             "shopping": "買い物",
             "paying and receipts": "支払い・レシート",
             "hotel check-in": "ホテルのチェックイン",
             "asking for directions": "道の聞き方",
-        }.get(s_en.lower(), scene)
+        }.get(s_en.lower(), s_en)
         mini = f if len(f) <= len(s) else s
         return (_normalize_spaces(mini or "実用フレーズ"), _normalize_spaces(s or "この場面"))
 
@@ -98,11 +97,12 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
         }.get(functional.lower(), functional)
         s = {
             "ordering at a restaurant": "식당 주문",
+            "ordering at a cafe": "카페 주문",
             "shopping": "쇼핑",
             "paying and receipts": "결제와 영수증",
             "hotel check-in": "호텔 체크인",
             "asking for directions": "길 묻기",
-        }.get(s_en.lower(), scene)
+        }.get(s_en.lower(), s_en)
         mini = f if len(f) <= len(s) else s
         return (_normalize_spaces(mini or "실용 표현"), _normalize_spaces(s or "이 상황"))
 
@@ -116,11 +116,12 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
         }.get(functional.lower(), functional)
         s = {
             "ordering at a restaurant": "pedido no restaurante",
+            "ordering at a cafe": "pedido no café",
             "shopping": "compras",
             "paying and receipts": "pagamento e recibos",
             "hotel check-in": "check-in no hotel",
             "asking for directions": "pedir direções",
-        }.get(s_en.lower(), scene)
+        }.get(s_en.lower(), s_en)
         mini = f if len(f) <= len(s) else s
         return (_normalize_spaces(mini or "frases úteis"), _normalize_spaces(s or "esta situação"))
 
@@ -128,76 +129,135 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
     mini = f_en if len(f_en) <= len(s_en) else s_en
     return (_normalize_spaces(mini or "everyday phrases"), _normalize_spaces(s_en or "this situation"))
 
-# ---------------- テンプレ定義 ----------------
+# ---------------- 視点（speaker→listener）自動推定 ----------------
+
+_ROLE_MAP = {
+    "restaurant": ("customer", "waiter"),
+    "cafe": ("customer", "barista"),
+    "hotel": ("guest", "receptionist"),
+    "train": ("traveler", "station staff"),
+    "station": ("traveler", "station staff"),
+    "airport": ("traveler", "staff"),
+    "shopping": ("customer", "clerk"),
+    "store": ("customer", "clerk"),
+    "pharmacy": ("customer", "pharmacist"),
+    "doctor": ("patient", "receptionist"),
+    "work": ("colleague", "colleague"),
+    "gym": ("member", "trainer"),
+    "direction": ("traveler", "local"),
+    "ticket": ("traveler", "staff"),
+    "check-in": ("guest", "receptionist"),
+}
+
+_REQUESTER_ROLES = {"customer","guest","traveler","patient","member","friend","colleague"}
+
+def _infer_roles(theme: str) -> Tuple[str, str]:
+    # 明示上書き（ENV）
+    sp_env = os.getenv("HOOK_SPEAKER", "").strip()
+    ls_env = os.getenv("HOOK_LISTENER", "").strip()
+    if sp_env and ls_env:
+        return (sp_env, ls_env)
+
+    s = (theme or "").lower()
+    # キーワード優先で推定
+    for k, pair in _ROLE_MAP.items():
+        if k in s:
+            return pair
+    # デフォルト
+    return ("friend", "friend")
+
+# ---------------- テンプレ定義（視点別に微調整） ----------------
 
 HOOKS = {
     "en": {
-        "shock":   ["Never say this at {scene}.", "This sounds rude at {scene}."],
-        "empathy": ["Ever freeze up at {scene}?", "Said this and got weird looks?"],
-        "time":    ["30 seconds. Fix your {mini}.", "Learn {mini} in half a minute."],
-        "release": ["Stop saying this. Try this.", "Tired of saying it wrong? Use this."],
-        "status":  ["Say this to sound confident.", "One phrase to sound fluent at {scene}."],
-        "confirm": ["Not sure what to say at {scene}? Use this."],
-        "directions": ["Lost at {scene}? Say this.", "Don’t panic. Ask like this."],
+        # requester（頼む側）向けは直接行動を促す
+        "shock_req":   ["This sounds rude at {scene}.", "Never say this at {scene}."],
+        "empathy_req": ["Freeze up at {scene}?", "Said it and got weird looks?"],
+        "time_req":    ["30 seconds. Fix your {mini}.", "Half a minute to nail {scene}."],
+        "release_req": ["Stop saying this. Say this instead.", "Tired of getting it wrong? Use this."],
+        "status_req":  ["Say this to sound natural.", "One line to sound confident at {scene}."],
+        "confirm_req": ["Not sure what to say at {scene}? Use this."],
+        "direc_req":   ["Lost at {scene}? Ask like this."],
+
+        # responder（受ける側）向けは案内系に寄せる
+        "status_res":  ["Greet and guide smoothly at {scene}.", "Sound helpful in one line."],
+        "time_res":    ["30 seconds to upgrade your greeting.", "Half a minute to guide naturally."],
+        "release_res": ["Drop the stiff phrasing. Try this one.", "Make it clear and friendly."],
     },
     "ja": {
-        "shock":   ["{scene}でこれ言うと失礼です。", "{scene}でその言い方は伝わりません。"],
-        "empathy": ["{scene}で固まったこと、ある？", "こう言って変な顔されたことない？"],
-        "time":    ["30秒で{mini}を直そう。", "30秒で{scene}の言い方を覚える。"],
-        "release": ["毎回同じ言い方してない？ これに変えよう。", "{mini}は、この一言で通じます。"],
-        "status":  ["こう言えば自然でスマート。", "{scene}で自信を持てる一言。"],
-        "confirm": ["{scene}で迷う？ まずはこれだけ。"],
-        "directions": ["道に迷っても大丈夫。こう聞けばOK。"],
+        "shock_req":   ["{scene}でその言い方は伝わりません。", "{scene}でそれは少し不自然です。"],
+        "empathy_req": ["{scene}で固まったこと、ある？", "こう言って変な顔されたことない？"],
+        "time_req":    ["30秒で{mini}を直そう。", "30秒で{scene}の言い方を覚える。"],
+        "release_req": ["定型文ばかりになってない？ これに変えよう。", "{mini}は、この一言で通じる。"],
+        "status_req":  ["こう言えば自然でスマート。", "{scene}で自信を持てる一言。"],
+        "confirm_req": ["{scene}で迷う？ まずはこれだけ。"],
+        "direc_req":   ["道に迷っても大丈夫。こう聞けばOK。"],
+
+        "status_res":  ["{scene}で感じよく案内する一言。", "自然に案内できる言い方。"],
+        "time_res":    ["30秒で案内の第一声を整える。", "半分の時間で丁寧に伝える。"],
+        "release_res": ["堅い言い方は卒業。こう言えばスムーズ。", "回りくどさを減らして、これだけ。"],
     },
     "ko": {
-        "shock":   ["{scene}에서 이렇게 말하면 실례예요.", "{scene}에서 그 말은 잘 안 통해요."],
-        "empathy": ["{scene}에서 말이 막힌 적 있죠?", "이렇게 말하고 어색했던 적 있어요?"],
-        "time":    ["30초면 {mini} 정리 끝.", "30초에 {scene} 한마디 익히기."],
-        "release": ["매번 같은 말만? 이 표현으로 바꿔요.", "{mini}, 이 한마디면 됩니다."],
-        "status":  ["이렇게 말하면 자연스럽게 들려요.", "{scene}에서 자신 있게 말하는 한마디."],
-        "confirm": ["{scene}에서 망설여지면, 이걸로 시작하세요."],
-        "directions": ["길을 잃어도 괜찮아요. 이렇게 물어보면 돼요."],
+        "shock_req":   ["{scene}에서 그 말은 잘 안 통해요.", "{scene}에서는 조금 어색해요."],
+        "empathy_req": ["{scene}에서 말이 막힌 적 있죠?", "이렇게 말하고 어색했던 적 있어요?"],
+        "time_req":    ["30초면 {mini} 정리 끝.", "30초에 {scene} 한마디 익히기."],
+        "release_req": ["매번 같은 말만? 이 표현으로 바꿔요.", "{mini}, 이 한마디면 됩니다."],
+        "status_req":  ["이렇게 말하면 자연스럽게 들려요.", "{scene}에서 자신 있게 말하는 한마디."],
+        "confirm_req": ["{scene}에서 망설여지면, 이걸로 시작하세요."],
+        "direc_req":   ["길을 잃어도 괜찮아요. 이렇게 물어보면 돼요."],
+
+        "status_res":  ["{scene}에서 부드럽게 안내하는 한마디.", "친절하고 자연스럽게 전하는 방법."],
+        "time_res":    ["30초면 첫마디가 달라집니다.", "반 분만에 자연스러운 안내."],
+        "release_res": ["딱딱한 말투는 그만. 이렇게 말해요.", "돌려 말하지 말고, 이 한마디면 충분해요."],
     },
     "pt": {
-        "shock":   ["Isso soa rude em {scene}.", "Nunca diga isso em {scene}."],
-        "empathy": ["Travou em {scene}?", "Já falou e ficou estranho?"],
-        "time":    ["30 segundos para arrumar {mini}.", "Aprenda {mini} em meio minuto."],
-        "release": ["Pare de dizer assim. Fale assim.", "Cansou de errar? Use isto."],
-        "status":  ["Diga assim e soe confiante.", "Uma frase para soar fluente em {scene}."],
-        "confirm": ["Ficou na dúvida em {scene}? Use isto."],
-        "directions": ["Perdido em {scene}? Pergunte assim."],
+        "shock_req":   ["Isso soa rude em {scene}.", "Não diga isso em {scene}."],
+        "empathy_req": ["Travou em {scene}?", "Falou e ficou estranho?"],
+        "time_req":    ["30 segundos para acertar {mini}.", "Meio minuto para {scene}."],
+        "release_req": ["Pare de dizer assim. Diga assim.", "Cansou de errar? Use isto."],
+        "status_req":  ["Diga assim para soar natural.", "Uma frase para soar confiante em {scene}."],
+        "confirm_req": ["Ficou na dúvida em {scene}? Use isto."],
+        "direc_req":   ["Perdido em {scene}? Pergunte assim."],
+
+        "status_res":  ["Atenda bem com uma frase.", "Guie com naturalidade em {scene}."],
+        "time_res":    ["30 segundos para melhorar sua abordagem.", "Meio minuto para receber melhor."],
+        "release_res": ["Abandone o formalismo. Fale assim.", "Chega de rodeios. Diga isto."],
     },
 }
 
-# pattern_hint からカテゴリ優先度を決める
-def _preferred_order_by_pattern(p: Optional[str]) -> Tuple[str, ...]:
+def _preferred_order_by_pattern(p: Optional[str], requester: bool) -> Tuple[str, ...]:
     p = (p or "").lower()
     if any(k in p for k in ("direction", "route")):
-        return ("directions", "empathy", "time", "status", "release", "shock", "confirm")
+        return (("direc_req","empathy_req","time_req","status_req","release_req","shock_req","confirm_req")
+                if requester else ("status_res","time_res","release_res"))
     if any(k in p for k in ("confirm", "availability", "detail")):
-        return ("confirm", "time", "status", "release", "empathy", "shock", "directions")
+        return (("confirm_req","time_req","status_req","release_req","empathy_req","shock_req","direc_req")
+                if requester else ("status_res","time_res","release_res"))
     if any(k in p for k in ("could i", "would you", "may i", "polite")):
-        return ("status", "time", "release", "empathy", "shock", "confirm", "directions")
+        return (("status_req","time_req","release_req","empathy_req","shock_req","confirm_req","direc_req")
+                if requester else ("status_res","time_res","release_res"))
     # 汎用
-    return ("empathy", "time", "status", "release", "shock", "confirm", "directions")
+    return (("empathy_req","time_req","status_req","release_req","shock_req","confirm_req","direc_req")
+            if requester else ("status_res","time_res","release_res"))
 
-def _pick_category(lang: str, pattern_hint: Optional[str]) -> str:
-    # 明示A/B指定があれば固定
+def _pick_category(lang: str, pattern_hint: Optional[str], requester: bool) -> str:
+    # 明示固定
     ab = os.getenv("HOOK_AB", "").strip()
-    cats = list(HOOKS[lang].keys())
+    lang_keys = list(HOOKS[lang].keys())
     if ab.isdigit():
-        return cats[int(ab) % len(cats)]
-    # そうでなければ pattern_hint からの優先順
-    for c in _preferred_order_by_pattern(pattern_hint):
+        return lang_keys[int(ab) % len(lang_keys)]
+    # 優先順で最初に存在するキー
+    for c in _preferred_order_by_pattern(pattern_hint, requester):
         if c in HOOKS[lang]:
             return c
-    return "empathy"
+    # フォールバック
+    return "empathy_req" if requester else "status_res"
 
 # ---------------- 公開API ----------------
 
 def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = None) -> str:
     """
-    返り値: 1〜2文の短いフック（字幕側で2文まで許容済み）
+    返り値: 1〜2文の短いフック（字幕側で2文まで許容）
     """
     lang = (audio_lang or "en").lower()
     if lang not in HOOKS:
@@ -206,20 +266,24 @@ def generate_hook(theme: str, audio_lang: str, pattern_hint: Optional[str] = Non
     functional, scene = _parse_theme(theme)
     mini, scene_label = _mini_and_scene_label(functional, scene, lang)
 
-    cat = _pick_category(lang, pattern_hint)
+    speaker, listener = _infer_roles(theme)
+    requester = speaker in _REQUESTER_ROLES
+
+    cat = _pick_category(lang, pattern_hint, requester)
     template = random.choice(HOOKS[lang][cat])
     text = template.format(mini=mini, scene=scene_label)
 
-    # 二文目の「行動指示」を短く自動追加（過度な記号は避ける）
+    # 二文目の「行動指示」（“copy” は避け、自然な言い方に）
     add_callout = {
-        "en": "Watch and copy one line.",
+        "en": "Remember just this line.",
         "ja": "この一言だけ覚えよう。",
-        "ko": "이 한마디만 따라 하자.",
-        "pt": "Veja e repita uma frase.",
+        "ko": "이 한마디만 외워 둬.",
+        "pt": "Repita só esta frase.",
     }
-    # 文字数に余裕があれば2文目を付加（最大2文）
+
     with_callout = f"{text} {add_callout[lang]}"
-    if len(with_callout) <= (int(os.getenv("HOOK_MAX_CHARS", "85")) + (0 if lang in ("en", "pt") else 5)):
+    max_lim = int(os.getenv("HOOK_MAX_CHARS", "85")) + (0 if lang in ("en","pt") else 5)
+    if len(with_callout) <= max_lim:
         text = with_callout
 
     text = _normalize_spaces(text)

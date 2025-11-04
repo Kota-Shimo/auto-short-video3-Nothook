@@ -1118,7 +1118,8 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             pass
     
         try:
-            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
+            # ★ ここだけ変更：context=local_context を明示
+            hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint, context=local_context)
         except Exception:
             hook_text = None
     

@@ -1109,10 +1109,20 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if HOOK_ENABLE:
         theme_for_hook = theme if isinstance(theme, str) and theme else "everyday phrases – a simple situation"
         pattern_hint   = (spec.get("pattern_hint") if isinstance(spec, dict) else None)
+    
+        # 🔹 topic_picker の theme から「視点（誰が誰に）」を推定し、
+        #     hook に渡して最適化。明示したい場合は ENV で上書き可。
+        try:
+            os.environ["HOOK_SPEAKER"]  = spec.get("speaker", "") if isinstance(spec, dict) else ""
+            os.environ["HOOK_LISTENER"] = spec.get("listener", "") if isinstance(spec, dict) else ""
+        except Exception:
+            pass
+    
         try:
             hook_text = generate_hook(theme_for_hook, audio_lang, pattern_hint)
         except Exception:
             hook_text = None
+    
         if hook_text:
             valid_dialogue.insert(0, ("N", hook_text))
             hook_offset = 1

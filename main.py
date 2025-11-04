@@ -1231,12 +1231,8 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     enhance(TEMP/"full_raw.wav", TEMP/"full.wav")
     AudioSegment.from_file(TEMP/"full.wav").export(TEMP/"full.mp3", format="mp3")
 
-    # 背景画像（★修正：フックではなく最初の語彙を優先してクエリ決定）
+    # 背景画像（✅ 単語ベースに変更：フック/テーマは一切使わない）
     bg_png = TEMP / "bg.png"
-    try:
-        theme_en = translate(theme, "en")
-    except Exception:
-        theme_en = theme
 
     def _is_ascii(s: str) -> bool:
         try:
@@ -1244,12 +1240,28 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         except Exception:
             return False
 
-    # 最初の語彙を優先。非ASCIIなら theme_en にフォールバック
-    first_vocab = vocab_words[0] if vocab_words else ""
-    if first_vocab and _is_ascii(first_vocab):
-        query_for_bg = first_vocab
-    else:
-        query_for_bg = theme_en or "language learning"
+    # 単語 → 英訳（必要時）→ クエリ候補
+    queries = []
+    for w in (vocab_words or []):
+        w = (w or "").strip()
+        if not w:
+            continue
+        if _is_ascii(w):
+            q = w
+        else:
+            try:
+                q = translate(w, "en")
+            except Exception:
+                q = ""
+        q = (q or "").strip()
+        if not q:
+            continue
+        low = q.lower()
+        if low not in queries:
+            queries.append(low)
+
+    # 単語が複数あれば上位2語を結合（例: "reservation checkout"）
+    query_for_bg = " ".join(queries[:2]) if queries else "language learning"
 
     try:
         fetch_bg(query_for_bg, bg_png)
@@ -1261,6 +1273,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             Image.new("RGB", (1920, 1080), (240, 240, 240)).save(bg_png)
         except Exception as e:
             raise RuntimeError(f"Failed to prepare bg.png fallback: {e}")
+            
 
     # lines.json
     lines_data = []

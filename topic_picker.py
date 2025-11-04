@@ -1,5 +1,5 @@
 # topic_picker.py – AUTOの多様化 & 日替わり固定 + 会話視点 (speaker/listener)
-import os, json, hashlib, datetime as dt, re, random
+import os, json, hashlib, datetime as dt, re, random, secrets
 from pathlib import Path
 from typing import Any
 from config import TEMP
@@ -8,7 +8,7 @@ from config import TEMP
 RECENT_BLOCK_N = int(os.getenv("RECENT_BLOCK_N", "7"))      # 直近ブロック数
 DIFF_LEVEL     = os.getenv("DIFF_LEVEL", "A2")              # A1/A2/B1/B2
 WORDS_DEFAULT  = int(os.getenv("VOCAB_WORDS", "6"))         # 単語数
-DAILY_LOCK     = os.getenv("TOPIC_DAILY", "1") == "1"       # 日替わり固定
+DAILY_LOCK     = os.getenv("TOPIC_DAILY", "1") == "1"       # 日替わり固定（※現行は未使用）
 ROLE_MODE      = os.getenv("ROLE_MODE", "rotate")           # fixed / rotate / random
 
 # ========= テーマ候補プール =========
@@ -95,10 +95,8 @@ def _too_similar(a: str, b: str) -> bool:
     wa, wb = set(re.findall(r"[a-z]+", a.lower())), set(re.findall(r"[a-z]+", b.lower()))
     return len(wa & wb) >= 3
 
-# ========= 日替わりシード =========
+# ========= 日替わりシード（参考：現行は使わない） =========
 def _daily_seed(lang: str) -> int:
-    if not DAILY_LOCK:
-        return random.randint(0, 10**9)
     today = dt.datetime.utcnow().strftime("%Y%m%d")
     base = f"{lang}:{today}:{os.getenv('TOPIC_SALT','v1')}"
     return int(hashlib.sha256(base.encode()).hexdigest(), 16) % (10**9)
@@ -112,17 +110,21 @@ def _pick_role_for(theme: str) -> tuple[str, str]:
     # default: friend↔friend
     return ("friend", "friend")
 
-# ========= AUTOテーマ選択 =========
+# ========= AUTOテーマ選択（完全ランダム化） =========
 def _pick_theme_for(lang: str) -> str:
     recent = _load_recent(lang)
-    seed = _daily_seed(lang)
-    rnd = random.Random(seed)
+
+    # ✅ 完全ランダム（毎回違う乱数源）
+    rnd = random.Random(secrets.randbits(64))
+
     candidates = POOL[:]
     rnd.shuffle(candidates)
+
     for t in candidates:
         if all(not _too_similar(t, r) for r in recent[-RECENT_BLOCK_N:]):
             _save_recent(lang, t)
             return t
+
     t = "everyday small talk"
     _save_recent(lang, t)
     return t

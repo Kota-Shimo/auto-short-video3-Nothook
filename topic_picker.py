@@ -1,16 +1,17 @@
-# topic_picker.py – AUTOの多様化 & 日替わり固定（main.pyは変更不要）
+# topic_picker.py – AUTOの多様化 & 日替わり固定 + 会話視点 (speaker/listener)
 import os, json, hashlib, datetime as dt, re, random
 from pathlib import Path
 from typing import Any
 from config import TEMP
 
-# ========= 基本設定（必要ならENVで調整） =========
+# ========= 基本設定 =========
 RECENT_BLOCK_N = int(os.getenv("RECENT_BLOCK_N", "7"))      # 直近ブロック数
 DIFF_LEVEL     = os.getenv("DIFF_LEVEL", "A2")              # A1/A2/B1/B2
 WORDS_DEFAULT  = int(os.getenv("VOCAB_WORDS", "6"))         # 単語数
-DAILY_LOCK     = os.getenv("TOPIC_DAILY", "1") == "1"       # 日替わり固定を有効
+DAILY_LOCK     = os.getenv("TOPIC_DAILY", "1") == "1"       # 日替わり固定
+ROLE_MODE      = os.getenv("ROLE_MODE", "rotate")           # fixed / rotate / random
 
-# ========= テーマ候補プール（学習向けに高頻度&再利用性） =========
+# ========= テーマ候補プール =========
 POOL = [
     # 接客・旅行
     "hotel check-in small talk","polite requests at a restaurant","ordering coffee at a cafe",
@@ -32,17 +33,35 @@ POOL = [
     "tickets and time for attractions","photo spots and recommendations",
 ]
 
-# ========= 類似判定（同系統連発を避けるための軽量フィルタ） =========
+# ========= 各シーンに対応する視点ペア =========
+ROLE_MAP = {
+    "restaurant": ("customer", "waiter"),
+    "cafe": ("customer", "barista"),
+    "hotel": ("guest", "receptionist"),
+    "train": ("traveler", "station staff"),
+    "airport": ("traveler", "staff"),
+    "shop": ("customer", "clerk"),
+    "pharmacy": ("customer", "pharmacist"),
+    "doctor": ("patient", "receptionist"),
+    "work": ("colleague", "colleague"),
+    "gym": ("member", "trainer"),
+    "sns": ("friend", "friend"),
+    "weather": ("friend", "friend"),
+    "reservation": ("customer", "operator"),
+    "lost": ("traveler", "staff"),
+    "photo": ("traveler", "local"),
+}
+
+# ========= 類似テーマ判定 =========
 KEYMAP = {
-    "restaurant": ["restaurant","order","menu","request","polite","could","may"],
+    "restaurant": ["restaurant","order","menu","request","polite"],
     "cafe":       ["cafe","coffee","order"],
-    "hotel":      ["hotel","check-in","check-out","room","reception","upgrade"],
+    "hotel":      ["hotel","check-in","check-out","room","reception"],
     "train":      ["train","station","platform","ticket"],
     "airport":    ["airport","flight","check-in"],
     "work":       ["workplace","follow up","instruction"],
     "shop":       ["shopping","store","price","refund","exchange","payment"],
 }
-
 def _keyset(t: str) -> set[str]:
     s = t.lower()
     keys = set()
@@ -51,7 +70,7 @@ def _keyset(t: str) -> set[str]:
             keys.add(k)
     return keys
 
-# ========= 最近テーマの保存/読込（言語別） =========
+# ========= 最近テーマ保存 =========
 def _recent_path(lang: str) -> Path:
     p = TEMP / f"recent_topics_{lang}.json"
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -70,7 +89,6 @@ def _save_recent(lang: str, topic: str):
     _recent_path(lang).write_text(json.dumps(lst, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def _too_similar(a: str, b: str) -> bool:
-    # キーワード群が重なる＆単語オーバーラップが多い場合に似ているとみなす
     ka, kb = _keyset(a), _keyset(b)
     if ka & kb:
         return True
@@ -80,94 +98,110 @@ def _too_similar(a: str, b: str) -> bool:
 # ========= 日替わりシード =========
 def _daily_seed(lang: str) -> int:
     if not DAILY_LOCK:
-        # 乱数に任せる（ワークフローごとに変わりうる）
         return random.randint(0, 10**9)
     today = dt.datetime.utcnow().strftime("%Y%m%d")
     base = f"{lang}:{today}:{os.getenv('TOPIC_SALT','v1')}"
     return int(hashlib.sha256(base.encode()).hexdigest(), 16) % (10**9)
 
-# ========= テーマ選択（AUTO用） =========
+# ========= 視点ローテーション選択 =========
+def _pick_role_for(theme: str) -> tuple[str, str]:
+    s = theme.lower()
+    for k, v in ROLE_MAP.items():
+        if k in s:
+            return v
+    # default: friend↔friend
+    return ("friend", "friend")
+
+# ========= AUTOテーマ選択 =========
 def _pick_theme_for(lang: str) -> str:
     recent = _load_recent(lang)
     seed = _daily_seed(lang)
     rnd = random.Random(seed)
-    # 候補をランダム順に並べ、最近と「似すぎ」を除外
     candidates = POOL[:]
     rnd.shuffle(candidates)
     for t in candidates:
         if all(not _too_similar(t, r) for r in recent[-RECENT_BLOCK_N:]):
             _save_recent(lang, t)
             return t
-    # どうしてもダメならシンプルな汎用テーマ
     t = "everyday small talk"
     _save_recent(lang, t)
     return t
 
-# ========= トレンド専用のspec（main.pyから呼ばれてもOKなダミー実装） =========
+# ========= context生成 =========
+def _make_context(theme: str, lang: str, speaker: str, listener: str) -> str:
+    if lang == "ja":
+        return (
+            f"{speaker}が{listener}に話す場面。テーマは「{theme}」。"
+            "予定や感想、時間や場所など、短く自然にやり取りする。"
+            "専門用語は避け、日常でよく使う語を優先。"
+        )
+    return (
+        f"A short, natural conversation where a {speaker} speaks to a {listener} "
+        f"about '{theme}'. Include small requests, opinions, or confirmations. Prefer everyday language."
+    )
+
+# ========= patternヒント補強 =========
+def _pattern_hint_for(theme: str, speaker: str, listener: str) -> str:
+    s = theme.lower()
+    if "restaurant" in s or "cafe" in s:
+        if speaker == "customer":
+            return "ordering, asking politely, follow-up requests"
+        else:
+            return "offering, confirming, suggesting options"
+    if "hotel" in s:
+        if speaker == "guest":
+            return "check-in, confirming details, asking politely"
+        else:
+            return "welcoming, explaining, offering help"
+    if "train" in s or "station" in s or "airport" in s:
+        return "asking time and place, tickets, directions, confirming details"
+    if "shopping" in s or "price" in s or "payment" in s:
+        if speaker == "customer":
+            return "asking price, options, short reasons"
+        else:
+            return "explaining options, confirming total, politeness"
+    return "short natural exchanges, opinions, confirmations"
+
+# ========= トレンドspec =========
 def build_trend_spec(theme: str, audio_lang: str, count: int | None = None) -> dict[str, Any]:
     c = int(count or WORDS_DEFAULT)
+    sp, ls = _pick_role_for(theme)
     return {
         "theme": theme,
         "context": (
-            f"Casual small talk about '{theme}': plans, opinions, tickets, time, place. "
-            "Prefer everyday words and useful collocations. [TREND]"
+            f"Casual talk between {sp} and {ls} about '{theme}', including plans, tickets, and opinions. [TREND]"
             if audio_lang != "ja" else
-            f"今の話題（{theme}）について日常会話。予定・感想・時間・場所・チケットなどを自然に話す。[TREND]"
+            f"{sp}が{ls}に{theme}について話す日常会話。[TREND]"
         ),
         "count": c,
         "relation_mode": "contextual",
-        "pos": ["noun","verb"],       # モーダル連発を避ける
+        "pos": ["noun","verb"],
         "difficulty": DIFF_LEVEL,
-        "trend": True
+        "trend": True,
+        "speaker": sp,
+        "listener": ls,
     }
 
 # ========= AUTO本体 =========
 def pick_by_content_type(content_mode: str, audio_lang: str, return_context: bool = False):
-    """
-    戻り値:
-      - return_context=False: 文字列テーマ
-      - return_context=True : (spec辞書) を返す（main.py 側の _normalize_spec が吸収可能）
-    """
     if content_mode != "vocab":
-        # vocab以外はシンプルなフォールバック
         theme = _pick_theme_for(audio_lang)
-        return (theme, _make_context(theme, audio_lang)) if return_context else theme
+        sp, ls = _pick_role_for(theme)
+        return (theme, _make_context(theme, audio_lang, sp, ls)) if return_context else theme
 
     theme = _pick_theme_for(audio_lang)
+    sp, ls = _pick_role_for(theme)
 
-    # ★ “contextual & noun/verb” を明示（could/may偏りの抑制）
     spec = {
         "theme": theme,
-        "context": _make_context(theme, audio_lang),
+        "context": _make_context(theme, audio_lang, sp, ls),
         "count": WORDS_DEFAULT,
         "relation_mode": "contextual",
         "pos": ["noun","verb"],
         "difficulty": DIFF_LEVEL,
-        "pattern_hint": _pattern_hint_for(theme),
+        "pattern_hint": _pattern_hint_for(theme, sp, ls),
         "trend": False,
+        "speaker": sp,
+        "listener": ls,
     }
     return spec if return_context else theme
-
-# ========= ユーティリティ =========
-def _make_context(theme: str, lang: str) -> str:
-    if lang == "ja":
-        return (
-            f"この話題（{theme}）について短く自然に雑談。予定や感想、時間や場所、チケット、支払いなど。"
-            "専門用語は避け、日常でよく使う語を優先。"
-        )
-    return (
-        f"Casual small talk about '{theme}': plans, opinions, time and place, "
-        "tickets and payment, simple reasons. Prefer everyday words."
-    )
-
-def _pattern_hint_for(theme: str) -> str:
-    s = theme.lower()
-    if "restaurant" in s or "cafe" in s:
-        return "ordering, asking politely, follow-up requests"
-    if "hotel" in s:
-        return "check-in, confirming details, offering help"
-    if "train" in s or "station" in s or "airport" in s:
-        return "asking time and place, tickets, directions"
-    if "shopping" in s or "price" in s or "payment" in s:
-        return "asking price, options, short reasons"
-    return "small talk patterns, short reasons, simple opinions"

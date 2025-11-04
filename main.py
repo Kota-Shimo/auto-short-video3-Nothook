@@ -9,6 +9,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: 単語2行の字幕は「例文＋テーマ＋品詞ヒント」で1語に確定する文脈訳へ切替。
 - 追加: 日本語の例文行も“かな読み”に変換して読み上げ可能（字幕は原文のまま）。
 - 追加: 語彙バリエーション最適化（直近履歴ペナルティ＋再生成）で「同じ単語ばかり」を回避。
+- 追加: テーマ回転（直近テーマの回避）で「同じテーマ連続」を抑制。
 """
 
 import argparse, logging, re, json, subprocess, os, sys, random, time
@@ -60,13 +61,18 @@ EX_TEMP_DEFAULT = float(os.getenv("EX_TEMP", "0.35"))   # 例文
 LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト
 
 # ── バリエーション設定（ENVで上書き可）
-VAR_RECENT_VIDEOS      = int(os.getenv("VAR_RECENT_VIDEOS", "30"))    # 直近何本ぶんを参照
-VAR_RECENT_DAYS        = int(os.getenv("VAR_RECENT_DAYS", "7"))       # 直近何日ぶんを参照
+VAR_RECENT_VIDEOS      = int(os.getenv("VAR_RECENT_VIDEOS", "30"))    # 直近何本ぶんを参照（語彙）
+VAR_RECENT_DAYS        = int(os.getenv("VAR_RECENT_DAYS", "7"))       # 直近何日ぶんを参照（語彙）
 VAR_MAX_OVERLAP_RATIO  = float(os.getenv("VAR_MAX_OVERLAP_RATIO", "0.34"))  # 新語群と直近語彙の重複率上限
 VAR_REGEN_ATTEMPTS     = int(os.getenv("VAR_REGEN_ATTEMPTS", "3"))    # 高重複時の再生成回数
 VAR_TEMP_BUMP          = float(os.getenv("VAR_TEMP_BUMP", "0.10"))    # 再生成ごとの温度加算
 VAR_RECENT_PENALTY     = float(os.getenv("VAR_RECENT_PENALTY", "0.65"))  # 最近語の重み係数（小さいほど当たりにくい）
 VAR_HISTORY_FILE       = os.getenv("VAR_HISTORY_FILE", str((OUTPUT / "vocab_history.json").resolve()))
+
+# ── テーマ回転（ENVで上書き可）
+THEME_RECENT_VIDEOS   = int(os.getenv("THEME_RECENT_VIDEOS", "30"))  # 直近何本ぶん参照（テーマ）
+THEME_RECENT_DAYS     = int(os.getenv("THEME_RECENT_DAYS", "7"))     # 直近何日ぶん参照（テーマ）
+THEME_REGEN_ATTEMPTS  = int(os.getenv("THEME_REGEN_ATTEMPTS", "3"))  # AUTO の引き直し最大回数
 
 # 軽いシード分散（被り低減）
 random.seed(int(time.time() // 3600) ^ hash((os.getenv("TARGET_ACCOUNT",""), os.getpid())))
@@ -442,7 +448,7 @@ def _gen_example_sentence(
         return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
 
 # ───────────────────────────────────────────────
-# バリエーション履歴ユーティリティ
+# バリエーション履歴ユーティリティ（語彙・テーマ共通）
 # ───────────────────────────────────────────────
 def _load_history():
     try:
@@ -521,6 +527,43 @@ def _overlap_ratio(new_words: list[str], audio_lang: str) -> float:
         return 0.0
     inter = sum(1 for w in new_words if w in recent_set)
     return inter / max(1, len(new_words))
+
+# ───────────────────────────────────────────────
+# ★ テーマ回転用ユーティリティ
+# ───────────────────────────────────────────────
+def _recent_themes(audio_lang: str):
+    """直近 THEME_RECENT_VIDEOS 本 & THEME_RECENT_DAYS 日のテーマ集合"""
+    data = _load_history()
+    if not data.get("items"):
+        return set(), []
+    now = time.time()
+    day_sec = 86400
+    picked = []
+    for item in reversed(data["items"]):
+        if len(picked) >= THEME_RECENT_VIDEOS:
+            break
+        if (now - item.get("ts", now)) > THEME_RECENT_DAYS * day_sec:
+            continue
+        if item.get("audio_lang") != audio_lang:
+            continue
+        picked.append(item)
+    themes = [it.get("theme", "") for it in picked if it.get("theme")]
+    return set(themes), picked
+
+def _avoid_recent_theme(picked_theme: str, candidates: list[str], audio_lang: str) -> str:
+    """
+    picked_theme が最近テーマとかぶる場合、候補から最近テーマを避けて差し替え。
+    候補が全部かぶるならそのまま返す（過度なループ回避）。
+    """
+    recent_set, _ = _recent_themes(audio_lang)
+    if picked_theme and picked_theme not in recent_set:
+        return picked_theme
+    if not candidates:
+        return picked_theme
+    for cand in candidates:
+        if cand and cand not in recent_set:
+            return cand
+    return picked_theme
 
 # ───────────────────────────────────────────────
 # 語彙リスト生成（spec対応＋バリエーション層）
@@ -965,7 +1008,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
         "fr": ["vocabulaire", "apprentissage des langues", "pratique orale", "écoute", "sous-titres"],
         "pt": ["vocabulário", "aprendizado de idiomas", "prática de fala", "prática auditiva", "legendas"],
         "id": ["kosakata", "belajar bahasa", "latihan berbicara", "latihan mendengarkan", "subtitle"],
-        "ko": ["어휘", "언어 学습", "말하기 연습", "듣기 연습", "자막"],
+        "ko": ["어휘", "언어 학습", "말하기 연습", "듣기 연습", "자막"],
     }
 
     base_tags = LOCALIZED_TAGS.get(title_lang, LOCALIZED_TAGS["en"]).copy()
@@ -1379,6 +1422,8 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     today = int(dt.datetime.utcnow().strftime("%Y%m%d"))
                     idx = (hash((trend_lang, today)) % len(candidates))
                     picked_topic = candidates[idx]
+                    # ★ 直近テーマ回避（候補から差し替え）
+                    picked_topic = _avoid_recent_theme(picked_topic, candidates, audio_lang)
 
                     spec_for_run = build_trend_spec(
                         theme=picked_topic,
@@ -1415,6 +1460,21 @@ def run_all(topic, turns, privacy, do_upload, chunk_size):
                     picked_topic, context_hint, spec_for_run = _normalize_spec(
                         picked_raw, context_hint, audio_lang, words_env_count
                     )
+                # ★ 直近テーマに当たったら最大 THEME_REGEN_ATTEMPTS 回まで引き直し
+                recent_themes, _ = _recent_themes(audio_lang)
+                tries = 0
+                while picked_topic in recent_themes and tries < THEME_REGEN_ATTEMPTS:
+                    tries += 1
+                    try:
+                        picked_raw = pick_by_content_type("vocab", audio_lang, return_context=True)
+                        picked_topic, context_hint, spec_for_run = _normalize_spec(
+                            picked_raw, context_hint, audio_lang, words_env_count
+                        )
+                    except TypeError:
+                        picked_raw = pick_by_content_type("vocab", audio_lang)
+                        picked_topic, context_hint, spec_for_run = _normalize_spec(
+                            picked_raw, context_hint, audio_lang, words_env_count
+                        )
 
             logging.info(f"[ISOLATED] {audio_lang} | subs={subs} | account={account} | theme={picked_topic}")
             run_one(

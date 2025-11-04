@@ -75,7 +75,7 @@ THEME_RECENT_DAYS     = int(os.getenv("THEME_RECENT_DAYS", "7"))     # 直近何
 THEME_REGEN_ATTEMPTS  = int(os.getenv("THEME_REGEN_ATTEMPTS", "3"))  # AUTO の引き直し最大回数
 
 # 完全ランダム化（毎回違うシード）
-random.seed(secrets.randbits(64))
+#random.seed(secrets.randbits(64))
 
 LANG_NAME = {
     "en": "English", "pt": "Portuguese", "id": "Indonesian",

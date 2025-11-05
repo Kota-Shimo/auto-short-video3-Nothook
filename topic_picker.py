@@ -1,8 +1,3 @@
-いいですね。実際に修正していきましょう。
-現在のコードは下記です。修正したのを全文で出してください。
-
-
-
 # topic_picker.py – vocab専用：機能→シーン→パターンを難易度連動の重みでランダム選択
 # 追加: トレンド専用 spec を生成する build_trend_spec() / pick_by_content_type(..., content_type="vocab_trend")
 import os

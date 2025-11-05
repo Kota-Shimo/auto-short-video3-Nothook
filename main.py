@@ -449,6 +449,40 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     return (words + [w for w in fallback if w not in words])[:n]
 
 # ───────────────────────────────────────────────
+# ★ spec 正規化＋spec対応の語彙生成
+# ───────────────────────────────────────────────
+def _normalize_spec(picked, context_hint, audio_lang, words_env_count: int):
+    """
+    pick_by_content_type などが返す値（文字列 / タプル / dict）を正規化し、
+    theme, context, spec の3要素を統一形式にして返す。
+    """
+    if isinstance(picked, dict):
+        theme = picked.get("theme") or "general vocabulary"
+        ctx   = picked.get("context") or (context_hint or "")
+        spec  = dict(picked)
+        if "count" not in spec or not isinstance(spec["count"], int):
+            spec["count"] = words_env_count
+        return theme, ctx, spec
+
+    if isinstance(picked, tuple) and len(picked) == 2:
+        theme, ctx = picked[0], picked[1]
+        spec = {
+            "theme": theme,
+            "context": ctx or (context_hint or ""),
+            "count": words_env_count
+        }
+        return theme, ctx, spec
+
+    # 文字列など単純なケース
+    theme = str(picked)
+    ctx   = context_hint or ""
+    spec  = {
+        "theme": theme,
+        "context": ctx,
+        "count": words_env_count
+    }
+    return theme, ctx, spec
+# ───────────────────────────────────────────────
 # ★ テーマのみから語彙を引く（レガシー互換用）
 # ───────────────────────────────────────────────
 def _gen_vocab_list(theme: str, lang_code: str, n: int) -> list[str]:

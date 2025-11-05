@@ -2,9 +2,9 @@ name: Auto-Vocab-Daily
 
 on:
   schedule:
-    - cron: '0 0  * * *'   # JST09:00 → 通常
-    - cron: '0 1  * * *'   # JST10:00 → ★トレンド
-    - cron: '0 3  * * *'   # JST12:00 → 通常
+    - cron: '0 2  * * *'   # JST09:00 → 通常
+    - cron: '0 3  * * *'   # JST10:00 → ★トレンド
+    - cron: '0 5  * * *'   # JST12:00 → 通常
     - cron: '0 6  * * *'   # JST15:00 → 通常
     - cron: '0 9  * * *'   # JST18:00 → 通常
     - cron: '0 12 * * *'   # JST21:00 → 通常

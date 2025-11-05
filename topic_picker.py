@@ -1,4 +1,5 @@
 # topic_picker.py – vocab専用：機能→シーン→パターンを難易度連動の重みでランダム選択
+# 方針: 「job interview」は Scene 専用に統一（Functional から除外）
 # 追加:
 #  - 役割（role_from / role_to）をシーンに整合する形で付与
 #  - 機能ごとの既定POSバイアス / 既定relation_mode / 既定patternの強化
@@ -14,12 +15,12 @@ rng = random.SystemRandom()
 # 定義（固定候補カタログ）
 # =========================
 
-# 機能（Functional）＝「何をしたいか」の核
+# 機能（Functional）＝「何をしたいか」の核（※面接は除外し、言語機能に純化）
 FUNCTIONALS: List[str] = [
     "greetings & introductions",
     "numbers & prices",
     "time & dates",
-    "asking & giving directions",  # 🧭 道案内（既存を強化）
+    "asking & giving directions",
     "polite requests",
     "offers & suggestions",
     "clarifying & confirming",
@@ -36,10 +37,10 @@ FUNCTIONALS: List[str] = [
     "cause & reason",
     "condition & advice",
     "small talk starters",
-    "job interviews",              # 🎙️ 面接（新規）
+    # （面接系は下の Scene 側に集約）
 ]
 
-# シーン（Scene）＝「どこで使うか」
+# シーン（Scene）＝「どこで使うか」※ job interview をこちらに一本化
 SCENES_BASE: List[str] = [
     "shopping basics",
     "paying & receipts",
@@ -57,35 +58,34 @@ SCENES_BASE: List[str] = [
     "delivery and online shopping",
     "phone basics",
     "addresses & contact info",
-    "street directions",   # 🧭 道案内（新規）
-    "job interview",       # 🎙️ 面接（新規）
+    "street directions",
+    "job interview",               # ← Scene 専用
     "small talk at lobby",
     "making plans in lobby",
 ]
 
 # Functional → 相性の良い Scene 候補（なければ SCENES_BASE を使う）
 SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
-    "greetings & introductions": ["hotel check-in/out", "small talk at lobby", "phone basics", "restaurant ordering"],
+    "greetings & introductions": ["hotel check-in/out", "small talk at lobby", "phone basics", "restaurant ordering", "job interview"],
     "numbers & prices": ["shopping basics", "paying & receipts", "transport tickets"],
-    "time & dates": ["appointments", "transport tickets", "restaurant ordering"],
+    "time & dates": ["appointments", "transport tickets", "restaurant ordering", "job interview"],
     "asking & giving directions": ["street directions", "transport tickets", "airport check-in", "hotel check-in/out"],
-    "polite requests": ["restaurant ordering", "hotel check-in/out", "facilities & problems"],
+    "polite requests": ["restaurant ordering", "hotel check-in/out", "facilities & problems", "job interview"],
     "offers & suggestions": ["restaurant ordering", "making plans in lobby", "phone basics"],
-    "clarifying & confirming": ["paying & receipts", "appointments", "security & boarding"],
+    "clarifying & confirming": ["paying & receipts", "appointments", "security & boarding", "job interview"],
     "describing problems": ["facilities & problems", "pharmacy basics", "returns & exchanges"],
     "apologizing & excuses": ["appointments", "restaurant ordering", "transport tickets"],
-    "agreeing & disagreeing": ["making plans in lobby", "restaurant ordering"],
-    "preferences & opinions": ["restaurant ordering", "shopping basics"],
+    "agreeing & disagreeing": ["making plans in lobby", "restaurant ordering", "job interview"],
+    "preferences & opinions": ["restaurant ordering", "shopping basics", "job interview"],
     "making plans": ["appointments", "restaurant ordering", "phone basics", "making plans in lobby"],
-    "past experiences": ["small talk at lobby", "restaurant ordering"],
-    "future arrangements": ["appointments", "transport tickets"],
+    "past experiences": ["small talk at lobby", "restaurant ordering", "job interview"],
+    "future arrangements": ["appointments", "transport tickets", "job interview"],
     "comparisons": ["shopping basics", "restaurant ordering"],
     "frequency & habits": ["small talk at lobby", "pharmacy basics"],
     "permission & ability": ["security & boarding", "hotel check-in/out"],
-    "cause & reason": ["returns & exchanges", "facilities & problems"],
+    "cause & reason": ["returns & exchanges", "facilities & problems", "job interview"],
     "condition & advice": ["pharmacy basics", "emergencies", "dietary needs"],
     "small talk starters": ["small talk at lobby", "restaurant ordering", "phone basics"],
-    "job interviews": ["job interview", "appointments", "phone basics"],
 }
 
 # シーンごとの自然な役割ペア（視点）
@@ -105,7 +105,7 @@ ROLE_PAIRS_BY_SCENE: Dict[str, List[Tuple[str, str]]] = {
     "dietary needs": [("server", "guest"), ("guest", "server")],
     "phone basics": [("staff", "caller"), ("caller", "staff")],
     "addresses & contact info": [("person A", "person B"), ("person B", "person A")],
-    "job interview": [("interviewer", "candidate"), ("candidate", "interviewer")],
+    "job interview": [("interviewer", "candidate"), ("candidate", "interviewer")],  # Scene 専用
     "small talk at lobby": [("staff", "guest"), ("guest", "staff")],
     "making plans in lobby": [("person A", "person B"), ("person B", "person A")],
     "delivery and online shopping": [("support agent", "customer"), ("customer", "support agent")],
@@ -124,7 +124,7 @@ PATTERN_CANDIDATES: List[str] = [
     "express_consequence",
     "ask_direction",     # 道案内向け
     "confirm_route",     # 道案内向け
-    "self_introduction", # 面接・自己紹介
+    "self_introduction", # 面接・自己紹介（Scene: job interview と組み合わせ）
     "talk_experience",   # 面接・過去経験
     "route_instruction", # 道案内：命令形の指示
     "",
@@ -144,19 +144,7 @@ PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
     "describing problems": {
         "confirm_detail": 5, "polite_request": 3, "give_advice": 3, "express_consequence": 2
     },
-    "job interviews": {
-        "self_introduction": 6, "talk_experience": 5, "express_opinion": 3, "confirm_detail": 2
-    },
-    # Scene 名でもヒットさせる（マージ用）
-    "street directions": {
-        "ask_direction": 6, "confirm_route": 4, "route_instruction": 4, "confirm_detail": 2
-    },
-    "job interview": {
-        "self_introduction": 6, "talk_experience": 5, "express_opinion": 3
-    },
-    "returns & exchanges": {
-        "confirm_detail": 5, "polite_request": 4, "express_consequence": 2
-    },
+    # 面接の重みは Scene 側（下）に集約
     "restaurant ordering": {
         "polite_request": 4, "make_suggestion": 3, "confirm_detail": 3
     },
@@ -164,6 +152,13 @@ PATTERN_WEIGHTS_BY_FUNCTIONAL: Dict[str, Dict[str, int]] = {
         "confirm_detail": 4, "polite_request": 4
     },
 }
+
+# Scene 側のパターン重み（job interview をこちらに集約）
+PATTERN_WEIGHTS_BY_FUNCTIONAL.update({
+    "street directions": {"ask_direction": 6, "confirm_route": 4, "route_instruction": 4, "confirm_detail": 2},
+    "job interview": {"self_introduction": 6, "talk_experience": 5, "express_opinion": 3, "confirm_detail": 2},
+    "returns & exchanges": {"confirm_detail": 5, "polite_request": 4, "express_consequence": 2},
+})
 
 # 機能ごとの既定 POS バイアス（ENV未指定時に使うだけ。main.py が未対応でも無害）
 DEFAULT_POS_BY_FUNCTIONAL: Dict[str, List[str]] = {
@@ -187,11 +182,9 @@ DEFAULT_POS_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "cause & reason": ["conjunction", "adverb", "noun"],
     "condition & advice": ["conjunction", "verb"],
     "small talk starters": ["noun", "adjective"],
-    "job interviews": ["verb", "noun", "adjective"],
 }
 
 # 難易度ごとの functional・scene の重み（相対値）
-# A1/A2 は基礎機能・基礎シーンを厚め、B1/B2 は問題解決・議論系や面接を厚め
 FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A1": {
         "greetings & introductions": 8, "numbers & prices": 7, "time & dates": 6,
@@ -210,13 +203,13 @@ FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
         "condition & advice": 5, "cause & reason": 5,
         "agreeing & disagreeing": 4, "comparisons": 4,
         "past experiences": 3, "future arrangements": 3,
-        "polite requests": 3, "making plans": 3, "job interviews": 5,
+        "polite requests": 3, "making plans": 3,
     },
     "B2": {
         "agreeing & disagreeing": 6, "preferences & opinions": 6,
         "cause & reason": 5, "condition & advice": 5,
         "comparisons": 4, "clarifying & confirming": 4,
-        "describing problems": 4, "job interviews": 6,
+        "describing problems": 4,
     },
 }
 
@@ -235,7 +228,7 @@ SCENE_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
         "facilities & problems": 6, "returns & exchanges": 6,
         "appointments": 5, "security & boarding": 5,
         "delivery and online shopping": 4, "pharmacy basics": 4,
-        "job interview": 5,
+        "job interview": 5,  # 面接は Scene 側で難易度B1/B2寄り
     },
     "B2": {
         "emergencies": 6, "security & boarding": 5,
@@ -370,8 +363,6 @@ def _context_for_theme(functional: str, scene: str) -> str:
         return "Two people make simple plans in the lobby."
 
     # functional による汎用 fallback
-    if "interview" in f:
-        return "A candidate introduces themselves and answers simple interview questions."
     if "greeting" in f or "introductions" in f:
         return "Two people meet for the first time and introduce themselves."
     if "number" in f or "price" in f:
@@ -436,9 +427,12 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
         relation_mode = rel_env
     else:
         # 機能軸の学習回は functional_family、場所依存が強いときは scene_related
-        if functional in ("greetings & introductions", "discourse markers", "agreeing & disagreeing", "preferences & opinions", "comparisons", "cause & reason", "condition & advice"):
+        if functional in ("greetings & introductions", "agreeing & disagreeing", "preferences & opinions",
+                          "comparisons", "cause & reason", "condition & advice", "clarifying & confirming",
+                          "polite requests", "offers & suggestions"):
             relation_mode = "functional_family"
-        elif scene in ("hotel check-in/out", "restaurant ordering", "street directions", "returns & exchanges", "transport tickets", "paying & receipts", "job interview", "facilities & problems"):
+        elif scene in ("hotel check-in/out", "restaurant ordering", "street directions", "returns & exchanges",
+                       "transport tickets", "paying & receipts", "job interview", "facilities & problems"):
             relation_mode = "scene_related"
         else:
             relation_mode = ""
@@ -459,8 +453,6 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
         family = "problem_reporting"
     elif functional == "numbers & prices":
         family = "time_price_numbers"
-    elif functional == "job interviews":
-        family = "job_interview_basics"
 
     theme = f"{functional} – {scene}"
     spec = {

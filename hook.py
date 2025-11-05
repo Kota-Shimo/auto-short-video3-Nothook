@@ -19,11 +19,13 @@ import os
 import re
 import random
 from typing import Optional, Tuple
+from translate import translate  # ★ 各言語へ毎回きちんと翻訳
 
 # ---------------- ユーティリティ ----------------
 
 _ASCII_WORD_RE = re.compile(r"[A-Za-z]+")
 _ASCII_SYMBOLS_RE = re.compile(r"[\/\-\→\(\)\[\]\<\>\|\_]+")
+_ASCII_ONLY_RE = re.compile(r'^[\x00-\x7F]+$')
 
 def _limit(text: str, lang: str) -> str:
     try:
@@ -70,10 +72,19 @@ def _parse_theme(theme: str) -> Tuple[str, str]:
     return (functional or "everyday phrases", scene or "a simple situation")
 
 def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, str]:
-    """ 画面に載せやすい短い {mini} と {scene} ラベル（言語別） """
+    """
+    画面に載せやすい短い {mini} と {scene} ラベル。
+    ルール：
+      1) 英語の表記ゆらぎを軽く正規化（英語ベースの意味合わせのみ）
+      2) その後、対象言語 lang に **毎回 translate() で翻訳**（既に多言語なら尊重）
+      3) 仕上げの軽整形
+      4) 短い方を {mini}、もう一方を {scene}
+    """
+    # --- 1) 英語ゆらぎの正規化（英語の意味カテゴリ合わせ用。出力に英語は使わない） ---
     base_map_en = {
         "polite requests": "polite requests",
         "asking & giving directions": "asking for directions",
+        "asking and giving directions": "asking for directions",
         "numbers & prices": "numbers and prices",
         "time & dates": "time and dates",
         "job interviews": "job interview answers",
@@ -84,69 +95,46 @@ def _mini_and_scene_label(functional: str, scene: str, lang: str) -> Tuple[str, 
         "street directions": "asking for directions",
         "ordering coffee at a cafe": "ordering at a cafe",
     }
-    f_en = base_map_en.get(functional.lower(), functional)
-    s_en = base_map_en.get(scene.lower(), scene)
+    f_en = base_map_en.get((functional or "").strip().lower(), (functional or "everyday phrases"))
+    s_en = base_map_en.get((scene or "").strip().lower(),      (scene      or "a simple situation"))
 
-    if lang == "ja":
-        f = {
-            "polite requests": "ていねいなお願い",
-            "asking and giving directions": "道の聞き方",
-            "numbers and prices": "数・値段の言い方",
-            "time and dates": "時間・日付の言い方",
-            "job interviews": "面接の答え方",
-        }.get(functional.lower(), functional)
-        s = {
-            "ordering at a restaurant": "レストラン注文",
-            "ordering at a cafe": "カフェ注文",
-            "shopping": "買い物",
-            "paying and receipts": "支払い・レシート",
-            "hotel check-in": "ホテルのチェックイン",
-            "asking for directions": "道の聞き方",
-        }.get(s_en.lower(), s_en)
-        mini = f if len(f) <= len(s) else s
-        return (_normalize_spaces(mini or "実用フレーズ"), _normalize_spaces(s or "この場面"))
+    # --- 2) 対象言語へ翻訳（英語 or ASCIIなら確実に訳す。既に多言語ならそのまま） ---
+    def _localize(text_candidate: str, target_lang: str) -> str:
+        tc = (text_candidate or "").strip()
+        if not tc:
+            return ""
+        if target_lang == "en":
+            # 英語ターゲット時：そのまま英語（ただし整形）
+            return _normalize_spaces(tc)
+        # ASCIIのみ＝英語等 → 訳す / 非ASCII＝既に多言語 → そのまま
+        if _ASCII_ONLY_RE.fullmatch(tc):
+            try:
+                out = translate(tc, target_lang)
+                out = _normalize_spaces(out.strip(" ・:：-—|｜"))
+                return out
+            except Exception:
+                return _normalize_spaces(tc)
+        else:
+            return _normalize_spaces(tc)
 
-    if lang == "ko":
-        f = {
-            "polite requests": "공손한 부탁",
-            "asking and giving directions": "길 묻기",
-            "numbers and prices": "숫자와 가격",
-            "time and dates": "시간과 날짜",
-            "job interviews": "면접 답변",
-        }.get(functional.lower(), functional)
-        s = {
-            "ordering at a restaurant": "식당 주문",
-            "ordering at a cafe": "카페 주문",
-            "shopping": "쇼핑",
-            "paying and receipts": "결제와 영수증",
-            "hotel check-in": "호텔 체크인",
-            "asking for directions": "길 묻기",
-        }.get(s_en.lower(), s_en)
-        mini = f if len(f) <= len(s) else s
-        return (_normalize_spaces(mini or "실용 표현"), _normalize_spaces(s or "이 상황"))
+    f_local = _localize(f_en, lang)
+    s_local = _localize(s_en, lang)
 
-    if lang == "pt":
-        f = {
-            "polite requests": "pedidos educados",
-            "asking and giving directions": "pedir direções",
-            "numbers and prices": "números e preços",
-            "time and dates": "hora e datas",
-            "job interviews": "respostas de entrevista",
-        }.get(functional.lower(), functional)
-        s = {
-            "ordering at a restaurant": "pedido no restaurante",
-            "ordering at a cafe": "pedido no café",
-            "shopping": "compras",
-            "paying and receipts": "pagamento e recibos",
-            "hotel check-in": "check-in no hotel",
-            "asking for directions": "pedir direções",
-        }.get(s_en.lower(), s_en)
-        mini = f if len(f) <= len(s) else s
-        return (_normalize_spaces(mini or "frases úteis"), _normalize_spaces(s or "esta situação"))
+    # --- 3) 軽い後処理（言語別の最小限整形） ---
+    if lang in ("ja", "ko", "pt", "en"):
+        f_local = _normalize_spaces(f_local)
+        s_local = _normalize_spaces(s_local)
 
-    # default: en
-    mini = f_en if len(f_en) <= len(s_en) else s_en
-    return (_normalize_spaces(mini or "everyday phrases"), _normalize_spaces(s_en or "this situation"))
+    # 空落ち保険
+    if not f_local:
+        f_local = _normalize_spaces(f_en)
+    if not s_local:
+        s_local = _normalize_spaces(s_en)
+
+    # --- 4) 短い方を {mini}、もう一方を {scene} ---
+    mini = f_local if len(f_local) <= len(s_local) else s_local
+    return (mini or _normalize_spaces(f_local or "everyday phrases"),
+            s_local or _normalize_spaces(s_en or "this situation"))
 
 # ---------------- 視点（speaker→listener）自動推定 ----------------
 

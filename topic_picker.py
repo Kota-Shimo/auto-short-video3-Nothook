@@ -5,6 +5,7 @@
 #  - 機能ごとの既定POSバイアス / 既定relation_mode / 既定patternの強化
 #  - validate_spec() で 機能↔シーン↔パターン↔役割 の整合性チェック（破壊的変更なし：未知キーは main.py 側が無視しても安全）
 #  - トレンド専用 spec を生成する build_trend_spec() / pick_by_content_type(..., content_type="vocab_trend")
+#  - ★ 追加修正（最小限）：難易度の重み付きランダム（DIFF_MODE/DIFF_WEIGHTS）と難易度別語数（WORDS_BY_DIFF）
 import os
 import random
 from typing import List, Tuple, Dict, Optional
@@ -237,6 +238,83 @@ SCENE_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     },
 }
 
+# =========================
+# ★ 追加: 難易度・語数の制御
+# =========================
+# DIFF_MODE: fixed / weighted / random（既定: weighted）
+DIFF_MODE = os.getenv("DIFF_MODE", "weighted").strip().lower()
+# DIFF_WEIGHTS 例: "A1:1,A2:2,B1:4,B2:2"
+DIFF_WEIGHTS_ENV = os.getenv("DIFF_WEIGHTS", "A1:1,A2:2,B1:4,B2:2").strip()
+# WORDS_BY_DIFF 例: "A1:8,A2:8,B1:6,B2:6"
+WORDS_BY_DIFF_ENV = os.getenv("WORDS_BY_DIFF", "").strip()
+
+def _parse_weights_env(s: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for part in (s or "").split(","):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            k = k.strip().upper()
+            try:
+                out[k] = max(0, int(v.strip()))
+            except Exception:
+                pass
+    # デフォルト補完
+    for k in ("A1", "A2", "B1", "B2"):
+        out.setdefault(k, 0 if s else {"A1":1,"A2":2,"B1":4,"B2":2}[k])
+    return out
+
+def _parse_words_env(s: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for part in (s or "").split(","):
+        if ":" in part:
+            k, v = part.split(":", 1)
+            k = k.strip().upper()
+            try:
+                out[k] = max(1, int(v.strip()))
+            except Exception:
+                pass
+    return out
+
+DIFF_WEIGHTS = _parse_weights_env(DIFF_WEIGHTS_ENV)
+WORDS_BY_DIFF = _parse_words_env(WORDS_BY_DIFF_ENV)
+
+def _pick_difficulty() -> str:
+    # CEFR_LEVEL があれば最優先（固定）
+    env = os.getenv("CEFR_LEVEL", "").strip().upper()
+    if env in ("A1", "A2", "B1", "B2"):
+        return env
+    # DIFF_MODE
+    if DIFF_MODE == "fixed":
+        # CEFR_LEVEL未指定でもfixedならB1固定（保守的）
+        return "B1"
+    if DIFF_MODE == "random":
+        return rng.choice(["A1", "A2", "B1", "B2"])
+    # weighted
+    pool = []
+    weights = []
+    for k in ("A1", "A2", "B1", "B2"):
+        pool.append(k)
+        weights.append(max(0, DIFF_WEIGHTS.get(k, 0)))
+    # 全部0ならB1
+    if sum(weights) <= 0:
+        return "B1"
+    return rng.choices(pool, weights=weights, k=1)[0]
+
+def _count_for_diff(diff: str) -> int:
+    # VOCAB_WORDS が設定されていればそれを優先（既存の運用を壊さない）
+    env_count = os.getenv("VOCAB_WORDS", "").strip()
+    if env_count.isdigit():
+        try:
+            return max(1, int(env_count))
+        except Exception:
+            pass
+    # 難易度別の既定（未指定は A1/A2:8, B1/B2:6）
+    if WORDS_BY_DIFF:
+        v = WORDS_BY_DIFF.get(diff.upper())
+        if isinstance(v, int) and v > 0:
+            return v
+    return 8 if diff.upper() in ("A1", "A2") else 6
+
 # =================================
 # ユーティリティ（重み選択 / ENV）
 # =================================
@@ -306,10 +384,8 @@ def _random_pos_from_env_or_default(functional: str) -> List[str]:
     return DEFAULT_POS_BY_FUNCTIONAL.get(functional, [])
 
 def _random_difficulty() -> str:
-    env = os.getenv("CEFR_LEVEL", "").strip().upper()
-    if env in ("A1", "A2", "B1", "B2"):
-        return env
-    return rng.choice(["A2", "B1", "B2"])
+    # 互換維持のため残すが、内部では _pick_difficulty() を使用
+    return _pick_difficulty()
 
 def _parse_csv_env(name: str) -> List[str]:
     v = os.getenv(name, "").strip()
@@ -420,6 +496,10 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
     pattern = _pick_pattern(functional, scene)
     # 既定POS（ENV優先）
     pos = _random_pos_from_env_or_default(functional)
+    # 難易度（重み付きランダム/固定/ランダム）
+    difficulty = _pick_difficulty()
+    # 語数：VOCAB_WORDSがあればそれを優先、なければ難易度別既定
+    count = _count_for_diff(difficulty)
 
     # relation_mode 既定（ENVがあればそれを使う）
     rel_env = os.getenv("RELATION_MODE", "").strip().lower()
@@ -459,10 +539,10 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
         # === 既存互換キー（main.py が参照） ===
         "theme": theme,
         "context": _context_for_theme(functional, scene),
-        "count": int(os.getenv("VOCAB_WORDS", "6")),
+        "count": count,
         "pos": pos,                                     # POS は ENV 優先、未指定なら既定
         "relation_mode": relation_mode,                 # functional_family / scene_related / ""（既存コードが見ても問題なし）
-        "difficulty": _random_difficulty(),
+        "difficulty": difficulty,
         "pattern_hint": pattern,                        # 既存 main.py のプロンプト強化に有効
         "morphology": _parse_csv_env("MORPHOLOGY"),
 
@@ -584,6 +664,9 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
       - CEFR_LEVEL=A1/A2/B1/B2 で難易度固定
       - FUNCTIONAL_OVERRIDE / SCENE_OVERRIDE / PATTERN_HINT で強制上書き
       - THEME_OVERRIDE: theme 文字列を丸ごと上書き（return_context=False の互換用途）
+      - ★ DIFF_MODE=fixed/weighted/random（既定: weighted）
+      - ★ DIFF_WEIGHTS="A1:1,A2:2,B1:4,B2:2"
+      - ★ WORDS_BY_DIFF="A1:8,A2:8,B1:6,B2:6"
 
     追加:
       - content_type="vocab_trend" または "trend" のとき:
@@ -609,10 +692,10 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
             return {
                 "theme": "general vocabulary",
                 "context": "A simple everyday situation with polite, practical language.",
-                "count": int(os.getenv("VOCAB_WORDS", "6")),
+                "count": _count_for_diff(_pick_difficulty()),
                 "pos": [],
                 "relation_mode": "",
-                "difficulty": _random_difficulty(),
+                "difficulty": _pick_difficulty(),
                 "pattern_hint": "",
                 "morphology": [],
             }

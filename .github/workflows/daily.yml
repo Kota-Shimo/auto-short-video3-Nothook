@@ -89,33 +89,45 @@ jobs:
           restore_token acc8 "$YT_ACC8"
           restore_token acc9 "$YT_ACC9"
 
-      # ★ 追加：Google Cloud Text-to-Speech の認証（日本語TTSをGoogleに切替）
+      # ★ Google Cloud Text-to-Speech（日本語TTSをGoogleに切替）— Base64シークレット版
       - name: 🔐 Setup Google credentials (TTS)
         shell: bash
         env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GCP_TTS_KEY_B64: ${{ secrets.GCP_TTS_KEY_B64 }}
         run: |
           set -euo pipefail
-          if [ -z "${GOOGLE_CREDENTIALS_JSON:-}" ]; then
-            echo "ERROR: secrets.GOOGLE_CREDENTIALS_JSON が未設定です。" >&2
+          if [ -z "${GCP_TTS_KEY_B64:-}" ]; then
+            echo "ERROR: secrets.GCP_TTS_KEY_B64 が未設定です。" >&2
             exit 1
           fi
           CRED="$RUNNER_TEMP/google-tts.json"
-          echo "::add-mask::$GOOGLE_CREDENTIALS_JSON"
-          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > "$CRED"
+          echo "::add-mask::$GCP_TTS_KEY_B64"
+          echo "$GCP_TTS_KEY_B64" | base64 -d > "$CRED"
           chmod 600 "$CRED"
+
+          # 簡易妥当性チェック
+          python - <<'PY'
+import json, os, sys
+p = os.path.join(os.environ["RUNNER_TEMP"], "google-tts.json")
+with open(p, "r", encoding="utf-8") as f:
+    data = json.load(f)
+for k in ("type","project_id","private_key_id","private_key","client_email","client_id"):
+    assert k in data, f"missing key: {k}"
+print("OK: credentials JSON looks valid.")
+PY
+
           {
             echo "GOOGLE_APPLICATION_CREDENTIALS=$CRED"
             echo "TTS_ENGINE_JA=google"
           } >> "$GITHUB_ENV"
 
-      # ★ 追加：（任意）日本語ボイスを複数からランダム選択
+      # （任意）日本語ボイスを複数からランダム選択
       - name: 🎙 Configure Google TTS voices (optional)
         shell: bash
         run: |
           {
             echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
-            # 全体プールや話速/ピッチ設定を入れたい場合は下記をアンコメント
+            # 以下は必要に応じて有効化
             # echo 'GOOGLE_VOICE_POOL=en-US-Neural2-D,ja-JP-Neural2-C,ko-KR-Neural2-B'
             # echo 'GOOGLE_TTS_RATE=1.00'
             # echo 'GOOGLE_TTS_PITCH=0.0'
@@ -132,13 +144,13 @@ jobs:
           TARGET_ACCOUNT:      ${{ github.event.inputs.target }}
         run: |
           MODE="AUTO"
-          # 手動実行なら mode 選択を反映
+          # 手動実行なら mode を反映
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ github.event.inputs.mode }}" = "trend" ]; then
               MODE="AUTO_TREND"
             fi
           else
-            # スケジュール時：UTC1:00 or 13:00（＝JST10:00/22:00）だけトレンド
+            # スケジュール時：UTC1:00 or 13:00（＝JST10:00/22:00）だけトレンド（※今は全て通常にしているため未使用）
             HOUR=$(date -u +%H)
             if [ "$HOUR" = "1" ] || [ "$HOUR" = "13" ]; then
               MODE="AUTO_TREND"

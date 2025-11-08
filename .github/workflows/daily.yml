@@ -7,7 +7,7 @@ on:
     - cron: '0 4  * * *'   # JST12:00 → 通常
     - cron: '0 6  * * *'   # JST15:00 → 通常
     #- cron: '0 7  * * *'   # JST18:00 → 通常
-    - cron: '0 8 * * *'    # JST21:00 → 通常
+    - cron: '0 8 * * *'   # JST21:00 → 通常
     #- cron: '0 13 * * *'   # JST22:00 → ★トレンド
     #- cron: '0 15 * * *'   # JST00:00 → 通常
     - cron: '0 18 * * *'   # JST03:00 → 通常
@@ -88,40 +88,6 @@ jobs:
           restore_token acc7 "$YT_ACC7"
           restore_token acc8 "$YT_ACC8"
           restore_token acc9 "$YT_ACC9"
-
-      # ★ 追加：Google Cloud Text-to-Speech の認証（日本語TTSをGoogleに切替）
-      - name: 🔐 Setup Google credentials (TTS)
-        shell: bash
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GOOGLE_CREDENTIALS_JSON:-}" ]; then
-            echo "ERROR: secrets.GOOGLE_CREDENTIALS_JSON が未設定です。" >&2
-            exit 1
-          fi
-          CRED="$RUNNER_TEMP/google-tts.json"
-          echo "::add-mask::$GOOGLE_CREDENTIALS_JSON"
-          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > "$CRED"
-          chmod 600 "$CRED"
-          {
-            echo "GOOGLE_APPLICATION_CREDENTIALS=$CRED"
-            echo "TTS_ENGINE_JA=google"
-          } >> "$GITHUB_ENV"
-
-      # ★ 追加：（任意）日本語ボイスを複数からランダム選択
-      - name: 🎙 Configure Google TTS voices (optional)
-        shell: bash
-        run: |
-          {
-            echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
-            # 全体プールや話速/ピッチ設定を入れたい場合は下記をアンコメント
-            # echo 'GOOGLE_VOICE_POOL=en-US-Neural2-D,ja-JP-Neural2-C,ko-KR-Neural2-B'
-            # echo 'GOOGLE_TTS_RATE=1.00'
-            # echo 'GOOGLE_TTS_PITCH=0.0'
-            # echo 'GOOGLE_TTS_VOL_DB=0.0'
-            # echo 'GOOGLE_TTS_SAMPLE_RATE=24000'
-          } >> "$GITHUB_ENV"
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:

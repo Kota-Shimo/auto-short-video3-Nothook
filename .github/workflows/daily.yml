@@ -89,54 +89,6 @@ jobs:
           restore_token acc8 "$YT_ACC8"
           restore_token acc9 "$YT_ACC9"
 
-      # ★ ここから追加：Google Cloud Text-to-Speech（Base64シークレット）
-      - name: 🔐 Setup Google credentials (TTS)
-        shell: bash
-        env:
-          GCP_TTS_KEY_B64: ${{ secrets.GCP_TTS_KEY_B64 }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GCP_TTS_KEY_B64:-}" ]; then
-            echo "ERROR: secrets.GCP_TTS_KEY_B64 が未設定です。" >&2
-            exit 1
-          fi
-
-          CRED="$RUNNER_TEMP/google-tts.json"
-          echo "::add-mask::$GCP_TTS_KEY_B64"
-          echo "$GCP_TTS_KEY_B64" | base64 -d > "$CRED"
-          chmod 600 "$CRED"
-
-          # 簡易妥当性チェック
-          python - <<'PY'
-import json, os
-p = os.path.join(os.environ["RUNNER_TEMP"], "google-tts.json")
-with open(p, "r", encoding="utf-8") as f:
-    data = json.load(f)
-for k in ("type","project_id","private_key_id","private_key","client_email","client_id"):
-    assert k in data, f"missing key: {k}"
-print("OK: credentials JSON looks valid.")
-PY
-
-          {
-            echo "GOOGLE_APPLICATION_CREDENTIALS=$CRED"
-            echo "TTS_ENGINE_JA=google"
-          } >> "$GITHUB_ENV"
-
-      # （任意）日本語ボイスを複数からランダム選択
-      - name: 🎙 Configure Google TTS voices (optional)
-        shell: bash
-        run: |
-          {
-            echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
-            # 必要なら追加のパラメータを有効化
-            # echo 'GOOGLE_VOICE_POOL=en-US-Neural2-D,ja-JP-Neural2-C,ko-KR-Neural2-B'
-            # echo 'GOOGLE_TTS_RATE=1.00'
-            # echo 'GOOGLE_TTS_PITCH=0.0'
-            # echo 'GOOGLE_TTS_VOL_DB=0.0'
-            # echo 'GOOGLE_TTS_SAMPLE_RATE=24000'
-          } >> "$GITHUB_ENV"
-      # ★ ここまで追加
-
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
           OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
@@ -183,3 +135,6 @@ PY
             temp/script_joined.tsv
             temp/spec.json
           if-no-files-found: ignore
+
+
+該当箇所だけ修正して全文

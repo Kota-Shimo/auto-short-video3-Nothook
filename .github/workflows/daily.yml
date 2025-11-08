@@ -4,28 +4,15 @@ on:
   schedule:
     #- cron: '0 2  * * *'   # JST09:00 → 通常
     #- cron: '0 1  * * *'   # JST10:00 → ★トレンド
-    - cron: '0 4  * * *'   # JST12:00 → 通常
-    - cron: '0 6  * * *'   # JST15:00 → 通常
+    - cron: '0 4  * * *'    # JST12:00 → 通常
+    - cron: '0 6  * * *'    # JST15:00 → 通常
     #- cron: '0 7  * * *'   # JST18:00 → 通常
-    - cron: '0 8 * * *'    # JST21:00 → 通常
+    - cron: '0 8 * * *'     # JST21:00 → 通常
     #- cron: '0 13 * * *'   # JST22:00 → ★トレンド
     #- cron: '0 15 * * *'   # JST00:00 → 通常
-    - cron: '0 18 * * *'   # JST03:00 → 通常
-    - cron: '0 21 * * *'   # JST06:00 → 通常
-  workflow_dispatch:
-    inputs:
-      mode:
-        description: "実行モード（normal=通常 / trend=トレンド）"
-        required: true
-        default: "trend"
-        type: choice
-        options:
-          - normal
-          - trend
-      target:
-        description: "アップロード先（acc1〜acc9）。空なら全アカウント"
-        required: false
-        default: ""
+    - cron: '0 18 * * *'    # JST03:00 → 通常
+    - cron: '0 21 * * *'    # JST06:00 → 通常
+  workflow_dispatch: {}      # ← フォーム無し・常に「Run workflow」ボタンが出る
 
 concurrency:
   group: auto-vocab-${{ github.ref }}
@@ -107,7 +94,7 @@ jobs:
 
           # 簡易妥当性チェック
           python - <<'PY'
-import json, os, sys
+import json, os
 p = os.path.join(os.environ["RUNNER_TEMP"], "google-tts.json")
 with open(p, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -141,16 +128,16 @@ PY
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
-          TARGET_ACCOUNT:      ${{ github.event.inputs.target }}
+          # ▼ 手動時も使えるよう、必要ならリポジトリ変数や環境変数で TARGET_ACCOUNT を渡してOK
+          # TARGET_ACCOUNT:    ${{ vars.TARGET_ACCOUNT }}
         run: |
           MODE="AUTO"
-          # 手動実行なら mode を反映
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ github.event.inputs.mode }}" = "trend" ]; then
-              MODE="AUTO_TREND"
-            fi
+            # 手動実行時の既定：トレンド（必要なら MODE=normal を手で上書きして再実行）
+            MODE="${MODE_OVERRIDE:-AUTO_TREND}"
           else
-            # スケジュール時：UTC1:00 or 13:00（＝JST10:00/22:00）だけトレンド（※今は全て通常にしているため未使用）
+            # スケジュール時：UTC1:00 or 13:00（＝JST10:00/22:00）だけトレンド
             HOUR=$(date -u +%H)
             if [ "$HOUR" = "1" ] || [ "$HOUR" = "13" ]; then
               MODE="AUTO_TREND"
@@ -158,13 +145,11 @@ PY
           fi
 
           echo "▶ 実行モード: $MODE"
+          echo "▶ TARGET_ACCOUNT: ${TARGET_ACCOUNT:-<ALL>}"
 
-          # target未入力なら全アカウント処理
           if [ -z "${TARGET_ACCOUNT:-}" ]; then
-            echo "▶ 全アカウントで実行"
             python main.py "$MODE" --privacy public --chunk 999
           else
-            echo "▶ 単一アカウント実行: $TARGET_ACCOUNT"
             python main.py "$MODE" --privacy public --chunk 999 --account "$TARGET_ACCOUNT"
           fi
 

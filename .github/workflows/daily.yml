@@ -11,7 +11,7 @@ on:
     - cron: '0 13 * * *'   # JST22:00 → ★トレンド
     #- cron: '0 15 * * *'   # JST00:00 → 通常
     - cron: '0 18 * * *'   # JST03:00 → 通常
-    #- cron: '0 21 * * *'   # JST06:00 → 通常
+    - cron: '0 21 * * *'   # JST06:00 → 通常
   workflow_dispatch:
     inputs:
       mode:

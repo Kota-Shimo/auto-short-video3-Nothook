@@ -54,7 +54,7 @@ SCENES_BASE: List[str] = [
     "hotel check-in/out",
     "facilities & problems",
     "appointments",
-    "pharmacy basics",
+    # "pharmacy basics",  # ← 削除
     "emergencies",
     "delivery and online shopping",
     "phone basics",
@@ -63,6 +63,8 @@ SCENES_BASE: List[str] = [
     "job interview",               # ← Scene 専用
     "small talk at lobby",
     "making plans in lobby",
+    # 代替として医療は1シーンのみ
+    "seeing a doctor",
 ]
 
 # Functional → 相性の良い Scene 候補（なければ SCENES_BASE を使う）
@@ -70,22 +72,22 @@ SCENES_BY_FUNCTIONAL: Dict[str, List[str]] = {
     "greetings & introductions": ["hotel check-in/out", "small talk at lobby", "phone basics", "restaurant ordering", "job interview"],
     "numbers & prices": ["shopping basics", "paying & receipts", "transport tickets"],
     "time & dates": ["appointments", "transport tickets", "restaurant ordering", "job interview"],
-    "asking & giving directions": ["street directions", "transport tickets", "airport check-in", "hotel check-in/out"],
-    "polite requests": ["restaurant ordering", "hotel check-in/out", "facilities & problems", "job interview"],
+    "asking & giving directions": ["street directions", "transport tickets", "airport check-in", "hotel check-in/out", "seeing a doctor"],
+    "polite requests": ["restaurant ordering", "hotel check-in/out", "facilities & problems", "job interview", "seeing a doctor"],
     "offers & suggestions": ["restaurant ordering", "making plans in lobby", "phone basics"],
-    "clarifying & confirming": ["paying & receipts", "appointments", "security & boarding", "job interview"],
-    "describing problems": ["facilities & problems", "pharmacy basics", "returns & exchanges"],
+    "clarifying & confirming": ["paying & receipts", "appointments", "security & boarding", "job interview", "seeing a doctor"],
+    "describing problems": ["facilities & problems", "returns & exchanges", "seeing a doctor"],
     "apologizing & excuses": ["appointments", "restaurant ordering", "transport tickets"],
     "agreeing & disagreeing": ["making plans in lobby", "restaurant ordering", "job interview"],
     "preferences & opinions": ["restaurant ordering", "shopping basics", "job interview"],
     "making plans": ["appointments", "restaurant ordering", "phone basics", "making plans in lobby"],
-    "past experiences": ["small talk at lobby", "restaurant ordering", "job interview"],
+    "past experiences": ["small talk at lobby", "restaurant ordering", "job interview", "seeing a doctor"],
     "future arrangements": ["appointments", "transport tickets", "job interview"],
     "comparisons": ["shopping basics", "restaurant ordering"],
-    "frequency & habits": ["small talk at lobby", "pharmacy basics"],
+    "frequency & habits": ["small talk at lobby"],  # pharmacy 削除に伴い除去
     "permission & ability": ["security & boarding", "hotel check-in/out"],
-    "cause & reason": ["returns & exchanges", "facilities & problems", "job interview"],
-    "condition & advice": ["pharmacy basics", "emergencies", "dietary needs"],
+    "cause & reason": ["returns & exchanges", "facilities & problems", "job interview", "seeing a doctor"],
+    "condition & advice": ["emergencies", "dietary needs", "seeing a doctor"],
     "small talk starters": ["small talk at lobby", "restaurant ordering", "phone basics"],
 }
 
@@ -98,7 +100,7 @@ ROLE_PAIRS_BY_SCENE: Dict[str, List[Tuple[str, str]]] = {
     "paying & receipts": [("cashier", "customer"), ("customer", "cashier")],
     "returns & exchanges": [("shop staff", "customer"), ("customer", "shop staff")],
     "appointments": [("staff", "customer"), ("customer", "staff")],
-    "pharmacy basics": [("pharmacist", "customer"), ("customer", "pharmacist")],
+    # "pharmacy basics": [("pharmacist", "customer"), ("customer", "pharmacist")],  # 削除
     "security & boarding": [("staff", "traveler"), ("traveler", "staff")],
     "transport tickets": [("ticket clerk", "traveler"), ("traveler", "ticket clerk")],
     "airport check-in": [("agent", "traveler"), ("traveler", "agent")],
@@ -111,6 +113,8 @@ ROLE_PAIRS_BY_SCENE: Dict[str, List[Tuple[str, str]]] = {
     "making plans in lobby": [("person A", "person B"), ("person B", "person A")],
     "delivery and online shopping": [("support agent", "customer"), ("customer", "support agent")],
     "emergencies": [("staff", "person"), ("person", "staff")],
+    # 代替シーン
+    "seeing a doctor": [("doctor", "patient"), ("patient", "doctor")],
 }
 
 # pattern 候補（学習向けの再利用性重視）
@@ -223,18 +227,21 @@ SCENE_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A2": {
         "restaurant ordering": 7, "shopping basics": 6, "paying & receipts": 6,
         "appointments": 5, "transport tickets": 5, "hotel check-in/out": 5,
-        "facilities & problems": 4, "pharmacy basics": 4, "street directions": 6,
+        "facilities & problems": 4, "street directions": 6,
+        "seeing a doctor": 3,  # ← A2から少し出る
     },
     "B1": {
         "facilities & problems": 6, "returns & exchanges": 6,
         "appointments": 5, "security & boarding": 5,
-        "delivery and online shopping": 4, "pharmacy basics": 4,
-        "job interview": 5,  # 面接は Scene 側で難易度B1/B2寄り
+        "delivery and online shopping": 4,
+        "seeing a doctor": 5,  # ← 中核
+        "job interview": 5,    # 面接は Scene 側で難易度B1/B2寄り
     },
     "B2": {
         "emergencies": 6, "security & boarding": 5,
         "returns & exchanges": 5, "facilities & problems": 5,
         "delivery and online shopping": 4, "job interview": 6,
+        "seeing a doctor": 5,
     },
 }
 
@@ -423,8 +430,8 @@ def _context_for_theme(functional: str, scene: str) -> str:
         return "A guest reports a small problem and asks for help."
     if "appointment" in s:
         return "A person makes or confirms a simple appointment time."
-    if "pharmacy" in s:
-        return "A customer asks for basic medicine politely."
+    if "seeing a doctor" in s or "doctor" in s:
+        return "A patient explains simple symptoms and asks a short question to a doctor."
     if "emergenc" in s:
         return "A person quickly explains a simple urgent situation."
     if "delivery" in s or "online" in s:
@@ -512,7 +519,8 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str, objec
                           "polite requests", "offers & suggestions"):
             relation_mode = "functional_family"
         elif scene in ("hotel check-in/out", "restaurant ordering", "street directions", "returns & exchanges",
-                       "transport tickets", "paying & receipts", "job interview", "facilities & problems"):
+                       "transport tickets", "paying & receipts", "job interview", "facilities & problems",
+                       "seeing a doctor"):
             relation_mode = "scene_related"
         else:
             relation_mode = ""
@@ -581,7 +589,8 @@ def validate_spec(spec: Dict[str, object]) -> Dict[str, object]:
     # relation_mode：空で、明らかにシーン依存なら scene_related を推奨
     if not spec.get("relation_mode"):
         if scene in ("hotel check-in/out", "restaurant ordering", "street directions", "returns & exchanges",
-                     "transport tickets", "paying & receipts", "job interview", "facilities & problems"):
+                     "transport tickets", "paying & receipts", "job interview", "facilities & problems",
+                     "seeing a doctor"):
             spec["relation_mode"] = "scene_related"
 
     return spec
@@ -589,7 +598,7 @@ def validate_spec(spec: Dict[str, object]) -> Dict[str, object]:
 # ========== トレンド専用: 関連語を“強く”引かせる spec ==========
 def _trend_pattern_hint(audio_lang: str) -> str:
     """
-    topic に固有の “役職/ポジション/機材/動作/イベント/会場/ルール/スコア・時間”
+    topic に固有の “役職/ポジション/機材/動作/イベント/会場/ルール・スコア・時間”
     といった『話題に特化した語』を優先させるための軽い誘導語。
     """
     common = "roles, positions, equipment, actions, events, venues, rules, scores or times"

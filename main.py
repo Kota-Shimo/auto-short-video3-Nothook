@@ -32,8 +32,32 @@ import datetime as dt   # UTC日付で安定選択に使う
 
 
 # 旧:
-from tts_openai     import speak
+# from tts_openai     import speak
 
+# 新: 置き換え
+from tts_openai import speak as speak_openai
+try:
+    from tts_google import speak as speak_google
+except Exception:
+    speak_google = None
+
+def speak(lang_code, speaker, text, out_path, style='neutral'):
+    """
+    日本語 + TTS_ENGINE_JA=google + tts_google が使える → Google TTS
+    それ以外 → 従来の OpenAI TTS
+    """
+    use_google = (
+        (lang_code or "").lower() == "ja" and
+        os.getenv("TTS_ENGINE_JA", "").strip().lower() == "google" and
+        speak_google is not None
+    )
+    if use_google:
+        # 任意: どちらを使ったかログに出したい場合
+        logging.info("[TTS] Google TTS (ja) を使用")
+        return speak_google("ja", speaker, text, out_path, style)
+    logging.info(f"[TTS] OpenAI TTS を使用 lang={lang_code}")
+    return speak_openai(lang_code, speaker, text, out_path, style)
+    
 # ───────────────────────────────────────────────
 GPT = OpenAI()
 CONTENT_MODE = "vocab"

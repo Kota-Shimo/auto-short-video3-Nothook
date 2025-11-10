@@ -228,7 +228,7 @@ def _lang_rules(lang_code: str) -> str:
     return (
         f"Write entirely in {lang_name}. "
         "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '→', '()', '[]', '<>', and '|'. "
+        "Avoid ASCII symbols like '/', '→', '()", '[]', '<>', and '|'. "
         "No translation glosses, brackets, or country/language mentions."
     )
 
@@ -482,7 +482,7 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
 
     content = ""
     try:
-        rsp = GPT.chat.completions.create(
+        rsp = GPT.chat_completions.create(  # ← 一部の環境で chat.completions にエイリアス
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=LIST_TEMP, top_p=0.9,
@@ -490,7 +490,16 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         )
         content = (rsp.choices[0].message.content or "")
     except Exception:
-        content = ""
+        try:
+            rsp = GPT.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role":"user","content":prompt}],
+                temperature=LIST_TEMP, top_p=0.9,
+                presence_penalty=0, frequency_penalty=0,
+            )
+            content = (rsp.choices[0].message.content or "")
+        except Exception:
+            content = ""
 
     words = []
     for line in content.splitlines():
@@ -911,7 +920,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
         "fr": ["vocabulaire", "apprentissage des langues", "pratique orale", "écoute", "sous-titres"],
         "pt": ["vocabulário", "aprendizado de idiomas", "prática de fala", "prática auditiva", "legendas"],
         "id": ["kosakata", "belajar bahasa", "latihan berbicara", "latihan mendengarkan", "subtitle"],
-        "ko": ["어휘", "언어 학습", "말하기 연습", "듣기 연습", "자막"],
+        "ko": ["어휘", "언어 학習", "말하기 연습", "듣기 연습", "자막"],
     }
 
     base_tags = LOCALIZED_TAGS.get(title_lang, LOCALIZED_TAGS["en"]).copy()

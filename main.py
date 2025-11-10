@@ -1006,6 +1006,29 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
 
     logging.info(f"[SUBS] runtime_subs={runtime_subs} (audio={audio_lang}, subs={subs})")
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
+    
+        # ────────── 語彙リスト生成 ──────────
+    raw = (topic or "").replace("\r", "\n").strip()
+    is_word_list = bool(re.search(r"[,;\n]", raw)) and len([w for w in re.split(r"[\n,;]+", raw) if w.strip()]) >= 2
+
+    words_count = int(os.getenv("VOCAB_WORDS", "6"))
+    if is_word_list:
+        vocab_words = [w.strip() for w in re.split(r"[\n,;]+", raw) if w.strip()]
+        theme = "custom list"
+        local_context = ""
+    else:
+        if isinstance(spec, dict):
+            theme = spec.get("theme") or topic
+            local_context = (spec.get("context") or context_hint or "")
+            vocab_words = _gen_vocab_list_from_spec(spec, audio_lang)
+            try:
+                (TEMP / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        else:
+            theme = topic
+            vocab_words = _gen_vocab_list(theme, audio_lang, words_count)
+            local_context = context_hint or ""
 
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []

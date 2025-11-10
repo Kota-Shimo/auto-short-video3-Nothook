@@ -9,6 +9,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: 単語2行の字幕は「例文＋テーマ＋品詞ヒント」で1語に確定する文脈訳へ切替。
 - 追加: 日本語の例文行も“かな読み”に変換して読み上げ可能（字幕は原文のまま）。
 - 追加: 🇯🇵日本語/🇰🇷韓国語にローマ字字幕（ja-Latn / ko-Latn）をオプション追加（SUB_ROMAJI_JA / SUB_ROMAN_KO）
+- 追加: 🇯🇵日本語のふりがな字幕（ja-kana）をオプション追加（SUB_KANA_JA）
 """
 
 import argparse, logging, re, json, subprocess, os, sys
@@ -228,7 +229,7 @@ def _lang_rules(lang_code: str) -> str:
     return (
         f"Write entirely in {lang_name}. "
         "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '→', '()', '[]', '<>', and '|'. "
+        "Avoid ASCII symbols like '/', '→', '()", '[]', '<>', and '|'. "
         "No translation glosses, brackets, or country/language mentions."
     )
 
@@ -908,7 +909,7 @@ def _make_trend_context(theme: str, lang_code: str) -> str:
     elif lang_code == "ko":
         return (
             f"'{theme}'에 대해 가볍게 대화: 계획, 의견, 티켓, 시간, 장소. "
-            "일상적으로 자주 쓰는 표현과 연어를 우선한다."
+            "일상적으로 자주 쓰는 표현과 연어を 우선한다."
         )
     return f"Casual talk about '{theme}' with everyday words (plans, opinions, tickets, time, place)."
 
@@ -920,7 +921,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
         "fr": ["vocabulaire", "apprentissage des langues", "pratique orale", "écoute", "sous-titres"],
         "pt": ["vocabulário", "aprendizado de idiomas", "prática de fala", "prática auditiva", "legendas"],
         "id": ["kosakata", "belajar bahasa", "latihan berbicara", "latihan mendengarkan", "subtitle"],
-        "ko": ["어휘", "언어 학習", "말하기 연습", "듣기 연습", "자막"],
+        "ko": ["어휘", "언어 学習", "말하기 연습", "듣기 연습", "자막"],
     }
 
     base_tags = LOCALIZED_TAGS.get(title_lang, LOCALIZED_TAGS["en"]).copy()
@@ -972,16 +973,23 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
 def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_upload, chunk_size, context_hint="", spec=None):
     reset_temp()
 
-    # ▼▼▼ ここで“ローマ字字幕”の動的挿入を行う（実体は runtime_subs）▼▼▼
+    # ▼▼▼ 字幕ランタイム構成：ja-Latn / ko-Latn / ja-kana の動的追加 ▼▼▼
     runtime_subs = list(subs)
+    # ローマ字（日本語）
     if os.getenv("SUB_ROMAJI_JA", "0") == "1":
         if "ja" in runtime_subs and "ja-Latn" not in runtime_subs:
             ja_idx = runtime_subs.index("ja")
             runtime_subs.insert(ja_idx + 1, "ja-Latn")
+    # ローマ字（韓国語）
     if os.getenv("SUB_ROMAN_KO", "0") == "1":
         if "ko" in runtime_subs and "ko-Latn" not in runtime_subs:
             ko_idx = runtime_subs.index("ko")
             runtime_subs.insert(ko_idx + 1, "ko-Latn")
+    # ★ ふりがな（日本語）— 単語行は _kana_reading、例文行は _kana_reading_sentence
+    if os.getenv("SUB_KANA_JA", "0") == "1":
+        if "ja" in runtime_subs and "ja-kana" not in runtime_subs:
+            ja_idx = runtime_subs.index("ja")
+            runtime_subs.insert(ja_idx + 1, "ja-kana")
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
 
     raw = (topic or "").replace("\r", "\n").strip()
@@ -1018,8 +1026,9 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
     for i, (spk, line) in enumerate(valid_dialogue, 1):
-        role_idx = (i - 1) % 3
+        role_idx = (i - 1) % 3  # 0/1=単語行, 2=例文行
 
+        # -------- TTS テキスト整形 --------
         tts_line = line
         if audio_lang == "ja":
             if role_idx == 2:
@@ -1055,19 +1064,37 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # 字幕（runtime_subs に対して生成）
+        # -------- 字幕生成（runtime_subs） --------
         for r, lang in enumerate(runtime_subs):
             if lang == audio_lang:
+                # 原文
                 sub_rows[r].append(_clean_sub_line(line, lang))
+
+            elif lang == "ja-kana":
+                # ふりがな行：単語行は単語かな、例文行は文かな
+                base_ja = _clean_sub_line(line, "ja")
+                if role_idx in (0, 1):
+                    if _KANJI_ONLY.fullmatch(base_ja):
+                        kana = _kana_reading(base_ja) or base_ja
+                    else:
+                        # 単語でも漢字混じり等は安全に文かな化
+                        kana = _kana_reading_sentence(base_ja) or base_ja
+                else:
+                    kana = _kana_reading_sentence(base_ja) or base_ja
+                sub_rows[r].append(kana)
+
             elif lang == "ja-Latn":
                 base_ja = _clean_sub_line(line, "ja")
                 roma = _to_romaji_ja(base_ja) or base_ja
                 sub_rows[r].append(roma)
+
             elif lang == "ko-Latn":
                 base_ko = _clean_sub_line(line, "ko")
                 roma = _to_roman_ko(base_ko) or base_ko
                 sub_rows[r].append(roma)
+
             else:
+                # 翻訳系
                 try:
                     if role_idx in (0, 1):
                         example_ctx = _example_for_index(valid_dialogue, i-1)

@@ -229,7 +229,7 @@ def _lang_rules(lang_code: str) -> str:
     return (
         f"Write entirely in {lang_name}. "
         "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '→', '()", '[]', '<>', and '|'. "
+        "Avoid ASCII symbols like '/', '→', '()', '[]', '<>', and '|'. "
         "No translation glosses, brackets, or country/language mentions."
     )
 

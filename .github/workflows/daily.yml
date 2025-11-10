@@ -55,7 +55,6 @@ jobs:
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pykakasi  # ★ ローマ字変換用（requirements.txtに入れているなら不要）
 
       - name: 🔑 Restore YouTube tokens (acc1–acc9, guard if missing)
         env:

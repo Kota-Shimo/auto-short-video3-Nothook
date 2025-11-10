@@ -1,6 +1,6 @@
 combos:
   - audio: en
-    subs: [en, pt]
+    subs: [en, es]
     account: acc1
 
   - audio: en
@@ -29,8 +29,8 @@ combos:
 
   - audio: ko
     subs: [ko, ja]
-    account: acc8   # ← 新規アカウントを使う例
+    account: acc8
 
-  - audio: pt
-    subs: [pt, en]
+  - audio: es
+    subs: [es, en]
     account: acc9

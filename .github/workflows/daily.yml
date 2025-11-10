@@ -136,6 +136,7 @@ jobs:
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
           TARGET_ACCOUNT:      ${{ github.event.inputs.target }}
+          SUB_KANA_JA:         "1"        # ★ これを追加
         run: |
           # スケジュール/手動ともに通常回のみ
           MODE="AUTO"

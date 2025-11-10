@@ -975,55 +975,37 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
 def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_upload, chunk_size, context_hint="", spec=None):
     reset_temp()
 
-    # ▼▼▼ 字幕ランタイム構成：ja-Latn / ko-Latn / ja-kana の動的追加 ▼▼▼
-    runtime_subs = list(subs)
-    # ローマ字（日本語）
-    if os.getenv("SUB_ROMAJI_JA", "0") == "1":
-        if "ja" in runtime_subs and "ja-Latn" not in runtime_subs:
-            ja_idx = runtime_subs.index("ja")
-            runtime_subs.insert(ja_idx + 1, "ja-Latn")
-    # ローマ字（韓国語）
-    if os.getenv("SUB_ROMAN_KO", "0") == "1":
-        if "ko" in runtime_subs and "ko-Latn" not in runtime_subs:
-            ko_idx = runtime_subs.index("ko")
-            runtime_subs.insert(ko_idx + 1, "ko-Latn")
-    # ★ ふりがな（日本語）— 単語行は _kana_reading、例文行は _kana_reading_sentence
-    if os.getenv("SUB_KANA_JA", "0") == "1":
-        if "ja" in runtime_subs and "ja-kana" not in runtime_subs:
-            ja_idx = runtime_subs.index("ja")
-            runtime_subs.insert(ja_idx + 1, "ja-kana")
-    # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
+    # ▼▼▼ 字幕ランタイム構成：ja/ko は 3段固定（原文 / ローマ字 / 第2字幕） ▼▼▼
+    def _pick_secondary_sub(primary: str, subs_list: list[str]) -> str | None:
+        """subs から primary と -Latn/ja-kana を除いた最初の言語コードを返す"""
+        for c in subs_list:
+            if c == primary:
+                continue
+            if c.endswith("-Latn") or c == "ja-kana":
+                continue
+            return c
+        return None
 
-    # ★ ローマ字だけ表示したい場合は 'ja' を 'ja-Latn' に置換し、'ja-kana' は無効化
-    if SUB_JA_ONLY_ROMAJI and "ja" in runtime_subs:
-        ja_idx = runtime_subs.index("ja")
-        has_latn = "ja-Latn" in runtime_subs
-        runtime_subs.pop(ja_idx)                 # 'ja' を外す
-        if not has_latn:
-            runtime_subs.insert(ja_idx, "ja-Latn")  # 同じ位置に ja-Latn 挿入
-        runtime_subs = [c for c in runtime_subs if c != "ja-kana"]  # かなは非表示
-        
-    raw = (topic or "").replace("\r", "\n").strip()
-    is_word_list = bool(re.search(r"[,;\n]", raw)) and len([w for w in re.split(r"[\n,;]+", raw) if w.strip()]) >= 2
-
-    words_count = int(os.getenv("VOCAB_WORDS", "6"))
-    if is_word_list:
-        vocab_words = [w.strip() for w in re.split(r"[\n,;]+", raw) if w.strip()]
-        theme = "custom list"
-        local_context = ""
-    else:
-        if isinstance(spec, dict):
-            theme = spec.get("theme") or topic
-            local_context = (spec.get("context") or context_hint or "")
-            vocab_words = _gen_vocab_list_from_spec(spec, audio_lang)
-            try:
-                (TEMP / "spec.json").write_text(json.dumps(spec, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                pass
+    if audio_lang in ("ja", "ko"):
+        runtime_subs: list[str] = []
+        # 1列目: 原文
+        runtime_subs.append(audio_lang)
+        # 2列目: ローマ字
+        runtime_subs.append("ja-Latn" if audio_lang == "ja" else "ko-Latn")
+        # 3列目: 第2字幕（combos.yaml の subs から取得。無ければ Fallback）
+        _sec = _pick_secondary_sub(audio_lang, subs)
+        if _sec:
+            runtime_subs.append(_sec)
         else:
-            theme = topic
-            vocab_words = _gen_vocab_list(theme, audio_lang, words_count)
-            local_context = context_hint or ""
+            fb = os.getenv("FALLBACK_SECOND_SUB", "en")
+            if fb != audio_lang:
+                runtime_subs.append(fb)
+    else:
+        # それ以外の音声言語は従来どおり
+        runtime_subs = list(subs)
+
+    logging.info(f"[SUBS] runtime_subs={runtime_subs} (audio={audio_lang}, subs={subs})")
+    # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
 
     # 3行ブロック: 単語 → 単語 → 例文
     dialogue = []

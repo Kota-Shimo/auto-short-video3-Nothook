@@ -127,20 +127,21 @@ jobs:
             echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
           } >> "$GITHUB_ENV"
 
-      - name: 🔤 Subtitle switches (Romaji only for Japanese)
+      - name: 🔤 Subtitle switches (Romaji + 英訳の3段)
         shell: bash
         run: |
           {
-            echo 'SUB_ROMAJI_JA=1'        # ja-Latn列を有効化
-            echo 'SUB_JA_ONLY_ROMAJI=1'   # 日本語原文の字幕を消してローマ字だけ表示
-            echo 'SUB_KANA_JA=0'          # かな字幕は明示的に無効化
+            echo 'SUB_ROMAJI_JA=1'        # 2段目: ja-Latn を出す
+            echo 'SUB_JA_ONLY_ROMAJI=0'   # 日本語原文も出す（1段目）
+            echo 'SUB_KANA_JA=0'          # かな字幕はオフ
+            echo 'FALLBACK_SECOND_SUB=en' # 3段目が無い時は英語で補完
             # echo 'SUB_ROMAN_KO=1'       # （任意）韓国語もローマ字化したい場合
           } >> "$GITHUB_ENV"
 
       - name: ✅ Print SUB_* envs (for debug)
         shell: bash
         run: |
-          printenv | grep '^SUB_' || true
+          printenv | grep -E '^(SUB_|FALLBACK_SECOND_SUB)' || true
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:

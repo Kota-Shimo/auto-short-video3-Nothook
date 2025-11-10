@@ -30,5 +30,5 @@ PyYAML>=6.0
 
 feedparser>=6.0.10
 
-pykakasi
-hangul-romanize
+pykakasi>=2.3.0     # 日本語→ローマ字
+hangul-romanize>=0.1.0  # 韓国語→ローマ字（ko-Latnを使う場合）

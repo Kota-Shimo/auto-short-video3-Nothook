@@ -31,7 +31,7 @@ on:
 
 concurrency:
   group: auto-vocab-${{ github.ref }}
-  cancel-in-progress: true   # ← 重複実行を防いで健全化
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -55,6 +55,7 @@ jobs:
           sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
+          python -m pip install pykakasi  # ★ ローマ字変換用（requirements.txtに入れているなら不要）
 
       - name: 🔑 Restore YouTube tokens (acc1–acc9, guard if missing)
         env:
@@ -123,11 +124,17 @@ jobs:
         run: |
           {
             echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
-            # echo 'GOOGLE_TTS_RATE=1.00'
-            # echo 'GOOGLE_TTS_PITCH=0.0'
-            # echo 'GOOGLE_TTS_VOL_DB=0.0'
-            # echo 'GOOGLE_TTS_SAMPLE_RATE=24000'
           } >> "$GITHUB_ENV"
+
+      - name: 🔤 Subtitle switches (Romaji only for Japanese)  # ★ 追加
+        shell: bash
+        run: |
+          {
+            echo 'SUB_ROMAJI_JA=1'        # ja-Latn列を有効化
+            echo 'SUB_JA_ONLY_ROMAJI=1'   # 日本語原文の字幕を消してローマ字だけ表示
+            # echo 'SUB_ROMAN_KO=1'       # （任意）韓国語もローマ字化したい場合
+          } >> "$GITHUB_ENV"
+          echo "SUB_ROMAJI_JA=$SUB_ROMAJI_JA SUB_JA_ONLY_ROMAJI=$SUB_JA_ONLY_ROMAJI"
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
@@ -136,9 +143,7 @@ jobs:
           VOCAB_WORDS:         6
           DEBUG_SCRIPT:        "1"
           TARGET_ACCOUNT:      ${{ github.event.inputs.target }}
-          SUB_KANA_JA:         "1"        # ★ これを追加
         run: |
-          # スケジュール/手動ともに通常回のみ
           MODE="AUTO"
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             if [ "${{ github.event.inputs.mode }}" = "normal" ]; then

@@ -1040,7 +1040,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             if role_idx == 2:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
-        out_audio = TEMP / f"{i:02d}.wav"}
+        out_audio = TEMP / f"{i:02d}.wav"
         style_for_tts = "serious" if audio_lang == "ja" else "neutral"
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)

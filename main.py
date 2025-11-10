@@ -80,6 +80,8 @@ JA_EX_READING = os.getenv("JA_EX_READING", "auto").lower()  # "auto" | "on" | "o
 JA_EX_READING_KANJI_RATIO = float(os.getenv("JA_EX_READING_KANJI_RATIO", "0.25"))
 JA_EX_READING_MAX_LEN     = int(os.getenv("JA_EX_READING_MAX_LEN", "60"))
 
+SUB_JA_ONLY_ROMAJI = os.getenv("SUB_JA_ONLY_ROMAJI", "0") == "1"
+
 # 生成時の温度（必要なら環境変数で上書き）
 EX_TEMP_DEFAULT = float(os.getenv("EX_TEMP", "0.35"))   # 例文
 LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト
@@ -992,6 +994,15 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             runtime_subs.insert(ja_idx + 1, "ja-kana")
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
 
+    # ★ ローマ字だけ表示したい場合は 'ja' を 'ja-Latn' に置換し、'ja-kana' は無効化
+    if SUB_JA_ONLY_ROMAJI and "ja" in runtime_subs:
+        ja_idx = runtime_subs.index("ja")
+        has_latn = "ja-Latn" in runtime_subs
+        runtime_subs.pop(ja_idx)                 # 'ja' を外す
+        if not has_latn:
+            runtime_subs.insert(ja_idx, "ja-Latn")  # 同じ位置に ja-Latn 挿入
+        runtime_subs = [c for c in runtime_subs if c != "ja-kana"]  # かなは非表示
+        
     raw = (topic or "").replace("\r", "\n").strip()
     is_word_list = bool(re.search(r"[,;\n]", raw)) and len([w for w in re.split(r"[\n,;]+", raw) if w.strip()]) >= 2
 

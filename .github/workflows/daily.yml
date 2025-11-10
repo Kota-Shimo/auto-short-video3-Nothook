@@ -2,26 +2,28 @@ name: Auto-Vocab-Daily
 
 on:
   schedule:
-    -  cron: '0 0  * * *'   # JST09:00 → 通常
-    #-  cron: '0 1  * * *'   # JST10:00 → ★トレンド
-    -  cron: '0 4  * * *'   # JST13:00 → 通常
-    -  cron: '0 6  * * *'   # JST15:00 → 通常
-    #- cron: '0 7  * * *'   # JST16:00 → 通常
-    -  cron: '0 8  * * *'   # JST17:00 → 通常
-    #-  cron: '0 13 * * *'   # JST22:00 → ★トレンド
-    #- cron: '0 15 * * *'   # JST00:00（翌日）→ 通常
-    -  cron: '0 18 * * *'   # JST03:00（翌日）→ 通常
-    -  cron: '0 21 * * *'   # JST06:00（翌日）→ 通常
+    # ───────── 毎日（All days, UTCベース）─────────
+    - cron: '30 22 * * *'  # JST07:30 → 通勤前/通学前
+    - cron: '15 03 * * *'  # JST12:15 → 昼休み
+    - cron: '30 06 * * *'  # JST15:30 → 放課後/休憩
+    - cron: '30 09 * * *'  # JST18:30 → 早めの帰宅帯
+    - cron: '00 12 * * *'  # JST21:00 → プライム帯
+    - cron: '30 14 * * *'  # JST23:30 → 寝る前/深夜勢
+
+    # ───────── 週末増発（Sat=6, Sun=0）─────────
+    - cron: '30 01 * * 6,0'  # JST10:30
+    - cron: '00 05 * * 6,0'  # JST14:00
+    - cron: '00 10 * * 6,0'  # JST19:00
+
   workflow_dispatch:
     inputs:
       mode:
-        description: "実行モード（normal=通常 / trend=トレンド）"
+        description: "実行モード（normalのみ運用）"
         required: true
-        default: "trend"
+        default: "normal"
         type: choice
         options:
           - normal
-          - trend
       target:
         description: "アップロード先（acc1〜acc9）。空なら全アカウント"
         required: false
@@ -29,7 +31,7 @@ on:
 
 concurrency:
   group: auto-vocab-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true   # ← 重複実行を防いで健全化
 
 jobs:
   build:
@@ -68,7 +70,6 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p tokens
-
           restore_token() {
             local NAME="$1" ; local VAL="$2"
             if [ -n "${VAL:-}" ]; then
@@ -78,7 +79,6 @@ jobs:
               echo "Skip $NAME (secret not set)"
             fi
           }
-
           restore_token acc1 "$YT_ACC1"
           restore_token acc2 "$YT_ACC2"
           restore_token acc3 "$YT_ACC3"
@@ -89,7 +89,7 @@ jobs:
           restore_token acc8 "$YT_ACC8"
           restore_token acc9 "$YT_ACC9"
 
-      # ★ ここから追加：Google Cloud Text-to-Speech（Base64シークレット）
+      # ★ Google Cloud Text-to-Speech（Base64シークレット）
       - name: 🔐 Setup Google credentials (TTS)
         shell: bash
         env:
@@ -100,13 +100,10 @@ jobs:
             echo "ERROR: secrets.GCP_TTS_KEY_B64 が未設定です。" >&2
             exit 1
           fi
-
           CRED="$RUNNER_TEMP/google-tts.json"
           echo "::add-mask::$GCP_TTS_KEY_B64"
           echo "$GCP_TTS_KEY_B64" | base64 -d > "$CRED"
           chmod 600 "$CRED"
-
-          # 簡易妥当性チェック
           python - <<'PY'
           import json, os
           p = os.path.join(os.environ["RUNNER_TEMP"], "google-tts.json")
@@ -116,26 +113,21 @@ jobs:
               assert k in data, f"missing key: {k}"
           print("OK: credentials JSON looks valid.")
           PY
-
           {
             echo "GOOGLE_APPLICATION_CREDENTIALS=$CRED"
             echo "TTS_ENGINE_JA=google"
           } >> "$GITHUB_ENV"
 
-      # （任意）日本語ボイスを複数からランダム選択
       - name: 🎙 Configure Google TTS voices (optional)
         shell: bash
         run: |
           {
             echo 'GOOGLE_VOICE_POOL_JA=ja-JP-Neural2-B,ja-JP-Neural2-C'
-            # 必要なら追加のパラメータを有効化
-            # echo 'GOOGLE_VOICE_POOL=en-US-Neural2-D,ja-JP-Neural2-C,ko-KR-Neural2-B'
             # echo 'GOOGLE_TTS_RATE=1.00'
             # echo 'GOOGLE_TTS_PITCH=0.0'
             # echo 'GOOGLE_TTS_VOL_DB=0.0'
             # echo 'GOOGLE_TTS_SAMPLE_RATE=24000'
           } >> "$GITHUB_ENV"
-      # ★ ここまで追加
 
       - name: 🎬 Build & Upload All Combos (vocab専用)
         env:
@@ -145,23 +137,14 @@ jobs:
           DEBUG_SCRIPT:        "1"
           TARGET_ACCOUNT:      ${{ github.event.inputs.target }}
         run: |
+          # スケジュール/手動ともに通常回のみ
           MODE="AUTO"
-          # 手動実行なら mode 選択を反映
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ github.event.inputs.mode }}" = "trend" ]; then
-              MODE="AUTO_TREND"
-            fi
-          else
-            # スケジュール時：UTC1:00 or 13:00（＝JST10:00/22:00）だけトレンド
-            HOUR=$(date -u +%H)
-            if [ "$HOUR" = "1" ] || [ "$HOUR" = "13" ]; then
-              MODE="AUTO_TREND"
+            if [ "${{ github.event.inputs.mode }}" = "normal" ]; then
+              MODE="AUTO"
             fi
           fi
-
           echo "▶ 実行モード: $MODE"
-
-          # target未入力なら全アカウント処理
           if [ -z "${TARGET_ACCOUNT:-}" ]; then
             echo "▶ 全アカウントで実行"
             python main.py "$MODE" --privacy public --chunk 999

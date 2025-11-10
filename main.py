@@ -8,6 +8,7 @@ main.py – VOCAB専用版（単純結合＋日本語ふりがな[TTSのみ]＋�
 - 追加: ラングエージルール（厳密モノリンガル・記号/注釈禁止）を例文生成に統合。
 - 追加: 単語2行の字幕は「例文＋テーマ＋品詞ヒント」で1語に確定する文脈訳へ切替。
 - 追加: 日本語の例文行も“かな読み”に変換して読み上げ可能（字幕は原文のまま）。
+- 追加: 🇯🇵日本語/🇰🇷韓国語にローマ字字幕（ja-Latn / ko-Latn）をオプション追加（SUB_ROMAJI_JA / SUB_ROMAN_KO）
 """
 
 import argparse, logging, re, json, subprocess, os, sys
@@ -227,7 +228,7 @@ def _lang_rules(lang_code: str) -> str:
     return (
         f"Write entirely in {lang_name}. "
         "Do not code-switch or include other writing systems. "
-        "Avoid ASCII symbols like '/', '→', '()', '[]', '<>', and '|'. "
+        "Avoid ASCII symbols like '/', '→', '()", '[]', '<>', and '|'. "
         "No translation glosses, brackets, or country/language mentions."
     )
 
@@ -648,6 +649,36 @@ def _kana_reading_sentence(text: str) -> str:
         return ""
 
 # ───────────────────────────────────────────────
+# 🇯🇵🇰🇷 ローマ字字幕ユーティリティ（任意依存）
+# ───────────────────────────────────────────────
+try:
+    from pykakasi import kakasi
+    _KK = kakasi()
+    _KK.setMode('H', 'a')  # ひらがな→ローマ字
+    _KK.setMode('K', 'a')  # カタカナ→ローマ字
+    _KK.setMode('J', 'a')  # 漢字→ローマ字
+    _KK_CONV = _KK.getConverter()
+except Exception:
+    _KK_CONV = None
+
+try:
+    from hangul_romanize import Transliter
+    from hangul_romanize.rule import academic
+    _KO_TR = Transliter(academic)
+except Exception:
+    _KO_TR = None
+
+def _to_romaji_ja(text: str) -> str:
+    if not _KK_CONV:
+        return ""
+    return _KK_CONV.do(text or "")
+
+def _to_roman_ko(text: str) -> str:
+    if not _KO_TR:
+        return ""
+    return _KO_TR.translit(text or "")
+
+# ───────────────────────────────────────────────
 # 例文取得（同じ3行ブロックの3行目）
 # ───────────────────────────────────────────────
 def _example_for_index(valid_dialogue: list[tuple[str, str]], idx0: int) -> str:
@@ -891,6 +922,7 @@ def make_tags(theme, audio_lang, subs, title_lang):
         theme_local = theme
     base_tags.insert(0, theme_local)
 
+    # タグは“元の字幕言語(subs)”のみ（ja-Latn/ko-Latn は含めない）
     for code in subs:
         if code in LANG_NAME:
             if title_lang == "ja":
@@ -931,6 +963,18 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
 def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_upload, chunk_size, context_hint="", spec=None):
     reset_temp()
 
+    # ▼▼▼ ここで“ローマ字字幕”の動的挿入を行う（実体は runtime_subs）▼▼▼
+    runtime_subs = list(subs)
+    if os.getenv("SUB_ROMAJI_JA", "0") == "1":
+        if "ja" in runtime_subs and "ja-Latn" not in runtime_subs:
+            ja_idx = runtime_subs.index("ja")
+            runtime_subs.insert(ja_idx + 1, "ja-Latn")
+    if os.getenv("SUB_ROMAN_KO", "0") == "1":
+        if "ko" in runtime_subs and "ko-Latn" not in runtime_subs:
+            ko_idx = runtime_subs.index("ko")
+            runtime_subs.insert(ko_idx + 1, "ko-Latn")
+    # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
+
     raw = (topic or "").replace("\r", "\n").strip()
     is_word_list = bool(re.search(r"[,;\n]", raw)) and len([w for w in re.split(r"[\n,;]+", raw) if w.strip()]) >= 2
 
@@ -961,7 +1005,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         dialogue.extend([("N", w), ("N", w), ("N", ex)])
 
     valid_dialogue = [(spk, line) for (spk, line) in dialogue if line.strip()]
-    audio_parts, sub_rows = [], [[] for _ in subs]
+    audio_parts, sub_rows = [], [[] for _ in runtime_subs]
     plain_lines, tts_lines = [line for (_, line) in valid_dialogue], []
 
     for i, (spk, line) in enumerate(valid_dialogue, 1):
@@ -996,16 +1040,24 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             if role_idx == 2:
                 tts_line = _ensure_period_for_sentence(tts_line, audio_lang)
 
-        out_audio = TEMP / f"{i:02d}.wav"
+        out_audio = TEMP / f"{i:02d}.wav"}
         style_for_tts = "serious" if audio_lang == "ja" else "neutral"
         speak(audio_lang, spk, tts_line, out_audio, style=style_for_tts)
         audio_parts.append(out_audio)
         tts_lines.append(tts_line)
 
-        # 字幕（原文 or 翻訳）
-        for r, lang in enumerate(subs):
+        # 字幕（runtime_subs に対して生成）
+        for r, lang in enumerate(runtime_subs):
             if lang == audio_lang:
                 sub_rows[r].append(_clean_sub_line(line, lang))
+            elif lang == "ja-Latn":
+                base_ja = _clean_sub_line(line, "ja")
+                roma = _to_romaji_ja(base_ja) or base_ja
+                sub_rows[r].append(roma)
+            elif lang == "ko-Latn":
+                base_ko = _clean_sub_line(line, "ko")
+                roma = _to_roman_ko(base_ko) or base_ko
+                sub_rows[r].append(roma)
             else:
                 try:
                     if role_idx in (0, 1):
@@ -1070,7 +1122,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     lines_data = []
     for i, ((spk, txt), dur) in enumerate(zip(valid_dialogue, new_durs)):
         row = [spk]
-        for r in range(len(subs)):
+        for r in range(len(runtime_subs)):
             row.append(sub_rows[r][i])
         row.append(dur)
         lines_data.append(row)
@@ -1081,11 +1133,11 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         (TEMP / "script_raw.txt").write_text("\n".join(plain_lines), encoding="utf-8")
         (TEMP / "script_tts.txt").write_text("\n".join(tts_lines), encoding="utf-8")
         with open(TEMP / "subs_table.tsv", "w", encoding="utf-8") as f:
-            header = ["idx", "text"] + [f"sub:{code}" for code in subs]
+            header = ["idx", "text"] + [f"sub:{code}" for code in runtime_subs]
             f.write("\t".join(header) + "\n")
             for idx in range(len(valid_dialogue)):
                 row = [str(idx+1), _clean_sub_line(valid_dialogue[idx][1], audio_lang)]
-                for r in range(len(subs)):
+                for r in range(len(runtime_subs)):
                     row.append(sub_rows[r][idx])
                 f.write("\t".join(row) + "\n")
         with open(TEMP / "durations.txt", "w", encoding="utf-8") as f:
@@ -1100,14 +1152,14 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if args.lines_only:
         return
 
-    # サムネ
+    # サムネ（※ サムネ/メタは“元の subs”基準で決める）
     thumb = TEMP / "thumbnail.jpg"
     thumb_lang = subs[1] if len(subs) > 1 else audio_lang
     make_thumbnail(theme, thumb_lang, thumb)
 
     # 動画生成
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    final_mp4 = OUTPUT / f"{audio_lang}-{'_'.join(subs)}_{stamp}.mp4"
+    final_mp4 = OUTPUT / f"{audio_lang}-{'_'.join(runtime_subs)}_{stamp}.mp4"
     final_mp4.parent.mkdir(parents=True, exist_ok=True)
 
     needed = {
@@ -1123,7 +1175,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
         "python", str(BASE/"chunk_builder.py"),
         str(TEMP/"lines.json"), str(TEMP/"full.mp3"), str(bg_png),
         "--chunk", str(chunk_size),
-        "--rows", str(len(subs)),
+        "--rows", str(len(runtime_subs)),
         "--out", str(final_mp4),
     ]
     logging.info("🔹 chunk_builder cmd: %s", " ".join(cmd))
@@ -1132,7 +1184,7 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     if not do_upload:
         return
 
-    # メタ生成＆アップロード
+    # メタ生成＆アップロード（tags/titleは ja-Latn/ko-Latn を含めないため subs を渡す）
     title = make_title(theme, thumb_lang, audio_lang_for_label=audio_lang)
     desc  = make_desc(theme, thumb_lang)
     tags  = make_tags(theme, audio_lang, subs, thumb_lang)

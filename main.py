@@ -970,7 +970,12 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
     return durs
 
 # ───────────────────────────────────────────────
+# ───────────────────────────────────────────────
 # 1コンボ処理
+# ───────────────────────────────────────────────
+def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_upload, chunk_size, context_hint="", spec=None):
+    reset_temp()
+
     # ▼▼▼ 字幕ランタイム構成：基本は subs をそのまま使う。ローマ字は“単独言語のときだけ補助” ▼▼▼
     runtime_subs: list[str] = list(subs)
 
@@ -1004,10 +1009,9 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
             runtime_subs.append(fb)
 
     logging.info(f"[SUBS] runtime_subs={runtime_subs} (audio={audio_lang}, subs={subs})")
-    
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
-    
-        # ────────── 語彙リスト生成 ──────────
+
+    # ────────── 語彙リスト生成 ──────────
     raw = (topic or "").replace("\r", "\n").strip()
     is_word_list = bool(re.search(r"[,;\n]", raw)) and len([w for w in re.split(r"[\n,;]+", raw) if w.strip()]) >= 2
 
@@ -1093,7 +1097,6 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
                     if _KANJI_ONLY.fullmatch(base_ja):
                         kana = _kana_reading(base_ja) or base_ja
                     else:
-                        # 単語でも漢字混じり等は安全に文かな化
                         kana = _kana_reading_sentence(base_ja) or base_ja
                 else:
                     kana = _kana_reading_sentence(base_ja) or base_ja

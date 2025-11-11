@@ -1003,6 +1003,16 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
     else:
         # それ以外の音声言語は従来どおり
         runtime_subs = list(subs)
+        
+        def _insert_after(lst, key, newcode):
+            if key in lst and newcode not in lst:
+                i = lst.index(key)
+                lst.insert(i + 1, newcode)
+        
+        # ふりがな追加の条件を厳密化：
+        # rows=2（つまり subs が2言語）なら ja-Latn は追加しない
+        if os.getenv("SUB_ROMAJI_JA", "0") == "1" and len(runtime_subs) < 2:
+            _insert_after(runtime_subs, "ja", "ja-Latn")
 
     logging.info(f"[SUBS] runtime_subs={runtime_subs} (audio={audio_lang}, subs={subs})")
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲

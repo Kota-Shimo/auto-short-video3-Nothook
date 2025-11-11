@@ -131,11 +131,11 @@ jobs:
         shell: bash
         run: |
           {
-            echo 'SUB_ROMAJI_JA=1'        # 2段目: ja-Latn を出す
+            echo 'SUB_ROMAJI_JA=0'        # 2段目: ja-Latn を出す
             echo 'SUB_JA_ONLY_ROMAJI=0'   # 日本語原文も出す（1段目）
             echo 'SUB_KANA_JA=0'          # かな字幕はオフ
             echo 'FALLBACK_SECOND_SUB=en' # 3段目が無い時は英語で補完
-            # echo 'SUB_ROMAN_KO=0'       # （任意）韓国語もローマ字化したい場合
+            echo 'SUB_ROMAN_KO=0'       # （任意）韓国語もローマ字化したい場合
           } >> "$GITHUB_ENV"
 
       - name: ✅ Print SUB_* envs (for debug)

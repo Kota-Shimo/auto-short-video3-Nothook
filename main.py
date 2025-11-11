@@ -992,16 +992,15 @@ def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_
             runtime_subs[j] = "ja-Latn"
         runtime_subs = [c for c in runtime_subs if c != "ja-kana"]
     else:
-        # 通常：字幕が1言語だけのときに限り ja-Latn を補助として追加
-        if os.getenv("SUB_ROMAJI_JA", "0") == "1":
-            if "ja" in runtime_subs and len(runtime_subs) == 1:
-                _insert_after(runtime_subs, "ja", "ja-Latn")
+        # ✅ 常に ja の直後に ja-Latn を追加（SUB_ROMAJI_JA=1 のとき）
+        if os.getenv("SUB_ROMAJI_JA", "0") == "1" and "ja" in runtime_subs:
+            _insert_after(runtime_subs, "ja", "ja-Latn")
 
     # ── 韓国語ローマ字の扱い ────────────────────────
-    if os.getenv("SUB_ROMAN_KO", "0") == "1":
-        if "ko" in runtime_subs and len(runtime_subs) == 1:
-            _insert_after(runtime_subs, "ko", "ko-Latn")
-
+    # （必要なら）常時 ko の直後に ko-Latn を追加
+    if os.getenv("SUB_ROMAN_KO", "0") == "1" and "ko" in runtime_subs:
+        _insert_after(runtime_subs, "ko", "ko-Latn")
+        
     # ── 翻訳のフォールバック（字幕が1言語しかない場合だけ、第2言語を補う） ──
     if len(runtime_subs) == 1:
         fb = os.getenv("FALLBACK_SECOND_SUB", "").strip()

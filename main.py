@@ -971,50 +971,40 @@ def _concat_with_gaps(audio_paths, gap_ms=120, pre_ms=120, min_ms=1000):
 
 # ───────────────────────────────────────────────
 # 1コンボ処理
-# ───────────────────────────────────────────────
-def run_one(topic, turns, audio_lang, subs, title_lang, yt_privacy, account, do_upload, chunk_size, context_hint="", spec=None):
-    reset_temp()
+    # ▼▼▼ 字幕ランタイム構成：基本は subs をそのまま使う。ローマ字は“単独言語のときだけ補助” ▼▼▼
+    runtime_subs: list[str] = list(subs)
 
-    # ▼▼▼ 字幕ランタイム構成：ja/ko は 3段固定（原文 / ローマ字 / 第2字幕） ▼▼▼
-    def _pick_secondary_sub(primary: str, subs_list: list[str]) -> str | None:
-        """subs から primary と -Latn/ja-kana を除いた最初の言語コードを返す"""
-        for c in subs_list:
-            if c == primary:
-                continue
-            if c.endswith("-Latn") or c == "ja-kana":
-                continue
-            return c
-        return None
+    def _insert_after(lst: list[str], key: str, newcode: str):
+        if key in lst and newcode not in lst:
+            i = lst.index(key)
+            lst.insert(i + 1, newcode)
 
-    if audio_lang in ("ja", "ko"):
-        runtime_subs: list[str] = []
-        # 1列目: 原文
-        runtime_subs.append(audio_lang)
-        # 2列目: ローマ字
-        runtime_subs.append("ja-Latn" if audio_lang == "ja" else "ko-Latn")
-        # 3列目: 第2字幕（combos.yaml の subs から取得。無ければ Fallback）
-        _sec = _pick_secondary_sub(audio_lang, subs)
-        if _sec:
-            runtime_subs.append(_sec)
-        else:
-            fb = os.getenv("FALLBACK_SECOND_SUB", "en")
-            if fb != audio_lang:
-                runtime_subs.append(fb)
+    # ── 日本語ローマ字の扱い ─────────────────────────
+    if SUB_JA_ONLY_ROMAJI:
+        # 『ローマ字だけ表示』モード：ja を ja-Latn に置換（かな行は使わない）
+        if "ja" in runtime_subs:
+            j = runtime_subs.index("ja")
+            runtime_subs[j] = "ja-Latn"
+        runtime_subs = [c for c in runtime_subs if c != "ja-kana"]
     else:
-        # それ以外の音声言語は従来どおり
-        runtime_subs = list(subs)
-        
-        def _insert_after(lst, key, newcode):
-            if key in lst and newcode not in lst:
-                i = lst.index(key)
-                lst.insert(i + 1, newcode)
-        
-        # ふりがな追加の条件を厳密化：
-        # rows=2（つまり subs が2言語）なら ja-Latn は追加しない
-        if os.getenv("SUB_ROMAJI_JA", "0") == "1" and len(runtime_subs) < 2:
-            _insert_after(runtime_subs, "ja", "ja-Latn")
+        # 通常：字幕が1言語だけのときに限り ja-Latn を補助として追加
+        if os.getenv("SUB_ROMAJI_JA", "0") == "1":
+            if "ja" in runtime_subs and len(runtime_subs) == 1:
+                _insert_after(runtime_subs, "ja", "ja-Latn")
+
+    # ── 韓国語ローマ字の扱い ────────────────────────
+    if os.getenv("SUB_ROMAN_KO", "0") == "1":
+        if "ko" in runtime_subs and len(runtime_subs) == 1:
+            _insert_after(runtime_subs, "ko", "ko-Latn")
+
+    # ── 翻訳のフォールバック（字幕が1言語しかない場合だけ、第2言語を補う） ──
+    if len(runtime_subs) == 1:
+        fb = os.getenv("FALLBACK_SECOND_SUB", "").strip()
+        if fb and fb not in (runtime_subs + [f"{runtime_subs[0]}-Latn", "ja-kana"]):
+            runtime_subs.append(fb)
 
     logging.info(f"[SUBS] runtime_subs={runtime_subs} (audio={audio_lang}, subs={subs})")
+    
     # ▲▲▲ 以降、字幕処理・行数は runtime_subs を使用。メタ（title/tags等）は subs を使用。▲▲▲
     
         # ────────── 語彙リスト生成 ──────────

@@ -2,8 +2,8 @@
 # 方針：
 #   - 単語選定は「学習カテゴリ（Functional）」中心
 #   - Scene は例文文脈 context にのみ使う（語彙テーマには含めない）
-#   - 難易度・重み付け・パターンは既存 main.py と互換
-#   - CEFR / 環境変数 / トレンドモード対応は維持
+#   - 難易度・重み付け・トレンド対応・環境変数は維持
+#   - pos は Functional に応じた既定を付与（main.py 側の ENV で上書き可能）
 
 import os, random
 from typing import List, Tuple, Dict, Optional
@@ -13,21 +13,21 @@ rng = random.SystemRandom()
 # =========================
 # 学習カテゴリ（Functional）
 # =========================
+# 物体名詞に偏らず、動詞・形容詞・接続表現・コロケーションを引きやすい構成
 FUNCTIONALS: List[str] = [
-    "daily actions",
-    "feelings and emotions",
-    "requests and offers",
-    "permissions and prohibitions",
-    "reasons and results",
-    "time and frequency",
-    "quantity and degree",
-    "connections and transitions",
-    "travel essentials",
-    "workplace basics",
-    "describing people and things",
-    "common verbs",
-    "common adjectives",
-    "utility and connectors",
+    "daily conversation basics",
+    "useful verbs for communication",
+    "expressing opinions & feelings",
+    "requests & suggestions",
+    "cause & effect expressions",
+    "connectors & transition words",
+    "time & frequency expressions",
+    "quantity & degree expressions",
+    "functional vocabulary for place & movement",
+    "work & service interaction basics",
+    "common adjectives for people & things",
+    "useful collocations & set phrases",
+    "essential prepositions & particles",
 ]
 
 # シーン（例文用の文脈ヒントとしてのみ使用）
@@ -45,28 +45,62 @@ SCENES: List[str] = [
     "talking to friends",
 ]
 
+# =========================
+# Functional ごとの既定 POS バイアス
+# （main.py が spec['pos'] を参照。ENV VOCAB_POS があれば main.py 側が優先する）
+# =========================
+DEFAULT_POS_BY_FUNCTIONAL: Dict[str, List[str]] = {
+    "daily conversation basics":                  ["verb", "adjective", "noun"],
+    "useful verbs for communication":             ["verb"],
+    "expressing opinions & feelings":             ["verb", "adjective", "adverb"],
+    "requests & suggestions":                     ["verb", "modal"],
+    "cause & effect expressions":                 ["conjunction", "adverb", "verb"],
+    "connectors & transition words":              ["conjunction", "adverb"],
+    "time & frequency expressions":               ["adverb", "noun"],
+    "quantity & degree expressions":              ["adverb", "adjective"],
+    "functional vocabulary for place & movement": ["verb", "preposition", "adverb"],
+    "work & service interaction basics":          ["verb", "noun", "adjective"],
+    "common adjectives for people & things":      ["adjective", "adverb"],
+    "useful collocations & set phrases":          ["verb", "noun", "adjective"],
+    "essential prepositions & particles":         ["preposition", "conjunction"],
+}
+
+# =========================
 # 難易度別 Functional の重み
+# =========================
 FUNCTIONAL_WEIGHTS_BY_LEVEL: Dict[str, Dict[str, int]] = {
     "A1": {
-        "daily actions": 7, "feelings and emotions": 6,
-        "time and frequency": 5, "common verbs": 7,
-        "common adjectives": 6, "requests and offers": 4,
+        "daily conversation basics": 8,
+        "useful verbs for communication": 7,
+        "common adjectives for people & things": 6,
+        "time & frequency expressions": 5,
+        "requests & suggestions": 4,
+        "connectors & transition words": 3,
     },
     "A2": {
-        "daily actions": 6, "feelings and emotions": 6,
-        "requests and offers": 6, "permissions and prohibitions": 5,
-        "time and frequency": 5, "connections and transitions": 4,
-        "travel essentials": 4, "quantity and degree": 4,
+        "daily conversation basics": 6,
+        "useful verbs for communication": 6,
+        "requests & suggestions": 6,
+        "time & frequency expressions": 5,
+        "quantity & degree expressions": 4,
+        "connectors & transition words": 4,
+        "functional vocabulary for place & movement": 4,
     },
     "B1": {
-        "requests and offers": 6, "permissions and prohibitions": 5,
-        "reasons and results": 6, "connections and transitions": 5,
-        "workplace basics": 5, "utility and connectors": 4,
+        "requests & suggestions": 6,
+        "expressing opinions & feelings": 6,
+        "cause & effect expressions": 6,
+        "connectors & transition words": 5,
+        "work & service interaction basics": 5,
+        "useful collocations & set phrases": 4,
     },
     "B2": {
-        "reasons and results": 5, "connections and transitions": 5,
-        "workplace basics": 5, "utility and connectors": 5,
-        "describing people and things": 4,
+        "expressing opinions & feelings": 6,
+        "cause & effect expressions": 6,
+        "connectors & transition words": 5,
+        "work & service interaction basics": 5,
+        "useful collocations & set phrases": 4,
+        "essential prepositions & particles": 4,
     },
 }
 
@@ -78,19 +112,30 @@ DIFF_WEIGHTS_ENV = os.getenv("DIFF_WEIGHTS", "A1:1,A2:2,B1:3,B2:2").strip()
 WORDS_BY_DIFF_ENV = os.getenv("WORDS_BY_DIFF", "A1:8,A2:8,B1:6,B2:6").strip()
 
 def _parse_weights_env(s: str) -> Dict[str, int]:
-    out = {}
-    for part in s.split(","):
+    out: Dict[str, int] = {}
+    for part in (s or "").split(","):
         if ":" in part:
             k, v = part.split(":", 1)
-            out[k.strip().upper()] = int(v.strip())
+            k = k.strip().upper()
+            try:
+                out[k] = max(0, int(v.strip()))
+            except Exception:
+                pass
+    # デフォ補完（無指定時の安全値）
+    for k, v in {"A1":1, "A2":2, "B1":3, "B2":2}.items():
+        out.setdefault(k, v)
     return out
 
 def _parse_words_env(s: str) -> Dict[str, int]:
-    out = {}
-    for part in s.split(","):
+    out: Dict[str, int] = {}
+    for part in (s or "").split(","):
         if ":" in part:
             k, v = part.split(":", 1)
-            out[k.strip().upper()] = int(v.strip())
+            k = k.strip().upper()
+            try:
+                out[k] = max(1, int(v.strip()))
+            except Exception:
+                pass
     return out
 
 DIFF_WEIGHTS = _parse_weights_env(DIFF_WEIGHTS_ENV)
@@ -104,14 +149,15 @@ def _pick_difficulty() -> str:
         return "B1"
     if DIFF_MODE == "random":
         return rng.choice(["A1", "A2", "B1", "B2"])
+    # weighted
     pool, weights = zip(*[(k, DIFF_WEIGHTS.get(k, 1)) for k in ("A1","A2","B1","B2")])
     return rng.choices(pool, weights=weights, k=1)[0]
 
 def _count_for_diff(diff: str) -> int:
     env_count = os.getenv("VOCAB_WORDS", "").strip()
     if env_count.isdigit():
-        return int(env_count)
-    return WORDS_BY_DIFF.get(diff, 8 if diff in ("A1", "A2") else 6)
+        return max(1, int(env_count))
+    return WORDS_BY_DIFF.get(diff, 8 if diff in ("A1","A2") else 6)
 
 # =========================
 # Weighted Random Utility
@@ -129,31 +175,39 @@ def _choose_weighted(items: List[Tuple[str,int]]) -> str:
 # =========================
 def _pick_functional() -> str:
     override = os.getenv("FUNCTIONAL_OVERRIDE", "").strip()
-    if override: return override
+    if override:
+        return override
     level = _env_level()
     weights = FUNCTIONAL_WEIGHTS_BY_LEVEL.get(level, {})
-    items = [(f, weights.get(f, 1)) for f in FUNCTIONALS]
+    # 定義外は重み1で残す（将来の追加に安全）
+    items = [(f, max(1, int(weights.get(f, 1)))) for f in FUNCTIONALS]
     return _choose_weighted(items)
 
 def _pick_scene() -> str:
     override = os.getenv("SCENE_OVERRIDE", "").strip()
-    if override: return override
+    if override:
+        return override
     return rng.choice(SCENES)
+
+def _default_pos_for(functional: str) -> List[str]:
+    return DEFAULT_POS_BY_FUNCTIONAL.get(functional, [])
 
 # =========================
 # Context（例文文脈）
 # =========================
 def _context_for_scene(scene: str) -> str:
-    s = scene.lower()
-    if "hotel" in s: return "A guest speaks politely with hotel staff."
-    if "restaurant" in s: return "A customer orders food or asks a question politely."
-    if "phone" in s: return "A person speaks on the phone for a simple matter."
-    if "office" in s: return "An employee talks with a coworker in an office."
-    if "school" in s: return "A student speaks with a teacher or classmate."
-    if "shopping" in s: return "A customer asks for prices or products at a store."
-    if "help" in s: return "Someone asks for help politely."
-    if "trip" in s: return "A traveler asks for directions or information."
+    s = (scene or "").lower()
+    if "hotel" in s:       return "A guest speaks politely with hotel staff."
+    if "restaurant" in s:  return "A customer orders food or asks a question politely."
+    if "phone" in s:       return "A person speaks on the phone for a simple matter."
+    if "office" in s:      return "An employee talks with a coworker in an office."
+    if "school" in s:      return "A student speaks with a teacher or classmate."
+    if "shopping" in s:    return "A customer asks for prices or products at a store."
+    if "help" in s:        return "Someone asks for help politely."
+    if "trip" in s:        return "A traveler asks for directions or information."
     if "appointment" in s: return "A person schedules or confirms a meeting."
+    if "meeting" in s:     return "Colleagues discuss a simple agenda item."
+    if "friends" in s:     return "Two friends chat casually in everyday language."
     return "A simple everyday situation with practical, polite language."
 
 # =========================
@@ -162,15 +216,22 @@ def _context_for_scene(scene: str) -> str:
 def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str,object]:
     difficulty = _pick_difficulty()
     count = _count_for_diff(difficulty)
-    spec = {
-        "theme": functional,                         # 学習カテゴリのみ
-        "context": _context_for_scene(scene),         # Sceneは例文context用のみ
+
+    # pos は Functional に応じた既定を付与（ENV VOCAB_POS があれば main.py で上書き可能）
+    pos_default = _default_pos_for(functional)
+
+    spec: Dict[str, object] = {
+        # === main.py 互換キー ===
+        "theme": functional,                         # 学習カテゴリのみ（タイトル用途）
+        "context": _context_for_scene(scene),        # Sceneは例文context用のみ
         "count": count,
-        "pos": [],                                   # POSはmain.py側で制御
+        "pos": pos_default,                          # 既定POS（名詞過多を避ける）
         "relation_mode": "functional_family",
         "difficulty": difficulty,
-        "pattern_hint": "",                          # main.pyが自動推定
+        "pattern_hint": "",                          # main.py 側が自動推定/未使用でも無害
         "morphology": [],
+
+        # === 追加情報（無害） ===
         "functional": functional,
         "scene": scene,
         "role_from": "person A",
@@ -184,13 +245,16 @@ def _build_spec(functional: str, scene: str, audio_lang: str) -> Dict[str,object
 # =========================
 def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None) -> Dict[str,object]:
     n = int(count or os.getenv("VOCAB_WORDS", "6"))
+    level = os.getenv("TREND_DIFFICULTY","B1").strip().upper()
+    if level not in ("A1","A2","B1","B2"):
+        level = "B1"
     return {
         "theme": theme or "popular topic",
-        "context": "Talk about current popular themes and related vocabulary.",
+        "context": "Talk about current popular themes using everyday, reusable vocabulary.",
         "count": n,
         "pos": ["noun","verb","adjective"],
         "relation_mode": "trend_related",
-        "difficulty": os.getenv("TREND_DIFFICULTY","B1"),
+        "difficulty": level,
         "pattern_hint": "roles, actions, equipment, events, places",
         "morphology": [],
         "trend": True,
@@ -205,8 +269,14 @@ def build_trend_spec(theme: str, audio_lang: str, *, count: Optional[int] = None
 # メイン関数
 # =========================
 def pick_by_content_type(content_type: str, audio_lang: str, return_context: bool = False):
+    """
+    戻り値:
+      - return_context=False → theme 文字列（= functional 名。Sceneは含めない）
+      - return_context=True  → dict(spec)（context に Scene 由来の文脈を付与）
+    """
     ct = (content_type or "vocab").lower()
 
+    # ---- トレンド専用 ----
     if ct in ("vocab_trend", "trend"):
         theme_override = os.getenv("THEME_OVERRIDE", "").strip()
         theme = theme_override or "popular topic"
@@ -214,9 +284,10 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
             return build_trend_spec(theme, audio_lang)
         return theme
 
+    # ---- 既定（vocab）以外のフォールバック ----
     if ct != "vocab":
+        diff = _pick_difficulty()
         if return_context:
-            diff = _pick_difficulty()
             return {
                 "theme": "general vocabulary",
                 "context": "A simple everyday situation with polite, practical language.",
@@ -229,11 +300,12 @@ def pick_by_content_type(content_type: str, audio_lang: str, return_context: boo
             }
         return "general vocabulary"
 
-    # Functional & Scene 選択
+    # ---- vocab モード ----
     functional = _pick_functional()
     scene = _pick_scene()
 
     if not return_context:
+        # タイトル用は Functional のみ返す（“旅行必需品”のような物体名詞系を避ける）
         return functional
     return _build_spec(functional, scene, audio_lang)
 

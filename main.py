@@ -84,7 +84,7 @@ SUB_JA_ONLY_ROMAJI = os.getenv("SUB_JA_ONLY_ROMAJI", "0") == "1"
 
 # 生成時の温度（必要なら環境変数で上書き）
 EX_TEMP_DEFAULT = float(os.getenv("EX_TEMP", "0.35"))   # 例文
-LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト
+LIST_TEMP       = float(os.getenv("LIST_TEMP", "0.30")) # 語彙リスト（必要なら ENV で 0.45〜0.55 に上げる）
 
 LANG_NAME = {
     "en": "English", "pt": "Portuguese", "id": "Indonesian",
@@ -265,10 +265,97 @@ def _ja_template_fallback(word: str) -> str:
     return f"{word}が必要です。"
 
 # ───────────────────────────────────────────────
-# 語彙ユーティリティ
+# 語彙ユーティリティ（難易度・履歴・禁止語など）
 # ───────────────────────────────────────────────
+# 最近使った語を保存するファイル
+USED_VOCAB_PATH = BASE / "used_vocab.json"
+
+# どのテーマでも基本いらない「学習メタ語」
+BAN_META_EN = {
+    "word","words","vocabulary","vocab",
+    "phrase","phrases","sentence","sentences",
+    "language","languages","grammar",
+    "translation","translate","translating","translator",
+    "study","studies","studying","learner","learners",
+    "learn","learns","learning","practice","practise",
+    "practices","practising","test","exam","exams",
+}
+
+# 会話系で避けたい「話す」系の動詞（speak/talk/share 等）
+BAN_TALK_EN = {
+    "talk","talks","talking",
+    "speak","speaks","speaking",
+    "say","says","saying",
+    "tell","tells","telling",
+    "share","shares","sharing",
+    "discuss","discusses","discussing",
+    "ask","asks","asking",
+}
+
+# 「会話系 Functional」：talk/speak を弾く対象
+_CONV_FUNCTIONALS_EN = {
+    "requests and offers",
+    "daily actions",
+    "workplace basics",
+    "utility and connectors",
+    "time and frequency",
+    "feelings and emotions",
+}
+
 def _example_temp_for(lang_code: str) -> float:
     return 0.20 if lang_code == "ja" else EX_TEMP_DEFAULT
+
+# 履歴読み書き（Functional×難易度×言語ごとに最近語彙を保持）
+def _load_used_words(lang_code: str, functional: str | None, diff: str | None, limit: int = 40) -> list[str]:
+    key = f"{(lang_code or '').lower()}|{(functional or '').strip().lower()}|{(diff or 'ANY').upper()}"
+    try:
+        if not USED_VOCAB_PATH.exists():
+            return []
+        with open(USED_VOCAB_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        seq = data.get(key, [])
+        if not isinstance(seq, list):
+            return []
+        return seq[-limit:]
+    except Exception:
+        return []
+
+def _save_used_words(lang_code: str, functional: str | None, diff: str | None, new_words: list[str]) -> None:
+    key = f"{(lang_code or '').lower()}|{(functional or '').strip().lower()}|{(diff or 'ANY').upper()}"
+    try:
+        if USED_VOCAB_PATH.exists():
+            with open(USED_VOCAB_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        else:
+            data = {}
+    except Exception:
+        data = {}
+
+    seq = data.get(key, [])
+    if not isinstance(seq, list):
+        seq = []
+    seq = list(seq) + [w for w in new_words if isinstance(w, str) and w]
+
+    # 重複を後ろ優先で除去
+    seen = set()
+    dedup = []
+    for w in seq:
+        if w in seen:
+            continue
+        seen.add(w)
+        dedup.append(w)
+
+    # 長くなりすぎないように末尾80件だけ保持
+    if len(dedup) > 80:
+        dedup = dedup[-80:]
+
+    data[key] = dedup
+    try:
+        USED_VOCAB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(USED_VOCAB_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 # --- 追加: ハイフン類正規化・含有判定ユーティリティ ----------------
 _HYPHENS = "‐-–—−﹘﹣"  # 各種見た目ハイフン
@@ -438,7 +525,7 @@ def _gen_example_sentence(
         return _ensure_period_for_sentence(f"Let's practice {word}", lang_code)
 
 # ───────────────────────────────────────────────
-# ★ spec対応の語彙生成
+# ★ spec対応の語彙生成（難易度＋Functional＋履歴を反映）
 # ───────────────────────────────────────────────
 def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     n   = int(spec.get("count", int(os.getenv("VOCAB_WORDS", "6"))))
@@ -450,11 +537,26 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     morph = spec.get("morphology") or []
     is_trend = bool(spec.get("trend"))
 
+    # Functional は spec から拾う（なければ theme を代用）
+    functional = (spec.get("functional") or th or "").strip().lower()
+
     theme_for_prompt = translate(th, lang_code) if lang_code != "en" else th
 
+    # 最近使った単語を読み込み（同じ lang×functional×diff）
+    recent_used = _load_used_words(lang_code, functional or th, diff)
+
     lines = []
-    lines.append(f"You are selecting {n} HIGH-FREQUENCY words for the topic: {theme_for_prompt}.")
-    if pos: lines.append("Restrict part-of-speech to: " + ", ".join(pos) + ".")
+    lines.append(
+        f"You are selecting {n} useful vocabulary words for the topic: {theme_for_prompt}."
+    )
+    lines.append(
+        "All words must be natural, reusable in everyday conversation, and suitable for language learners."
+    )
+
+    if pos:
+        lines.append("Restrict part-of-speech to: " + ", ".join(pos) + ".")
+
+    # relation_mode に応じたガイド
     if rel == "synonym":
         lines.append("Prefer synonyms or near-synonyms around the central topic.")
     elif rel == "antonym":
@@ -464,28 +566,118 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
     elif rel == "pattern":
         lines.append("Prefer short reusable patterns or set phrases.")
     elif rel == "contextual":
-        lines.append("Focus on words useful in natural conversation about this topic: opinions, reasons, actions, feelings, plans, tickets, time, place.")
+        lines.append(
+            "Focus on words useful in natural conversation about this topic: opinions, reasons, actions, feelings, "
+            "plans, tickets, time, place, common problems."
+        )
         lines.append("Avoid rare proper nouns; prefer reusable mid-frequency conversation words.")
 
     if patt:
         lines.append(f"Pattern focus hint: {patt}.")
     if morph:
-        lines.append("If natural, include related morphological family: " + ", ".join(morph) + ".")
+        lines.append("If natural, you may include related morphological family: " + ", ".join(morph) + ".")
+
+    # ★難易度ごとの指示
+    if diff in ("A1", "A2"):
+        lines.append(
+            f"Target approximate CEFR level: {diff}. "
+            "Prefer very common everyday words that beginners need in simple daily situations."
+        )
+        lines.append(
+            "Avoid very abstract concepts, technical terms, or rare academic vocabulary."
+        )
+    elif diff in ("B1", "B2"):
+        # A1すぎ単語を避ける
+        lines.append(
+            f"Target approximate CEFR level: {diff}. "
+            "Avoid extremely basic A1-only words such as 'go', 'come', 'do', 'make', "
+            "'have', 'good', 'bad', 'big', 'small', 'nice' unless absolutely necessary."
+        )
+        lines.append(
+            "Prefer slightly more specific words that express reasons, opinions, problems, "
+            "feelings, processes, and more precise actions."
+        )
+
+    # ★Functionalごとのガイド（主に英語向け）
+    if lang_code == "en":
+        if functional == "travel essentials":
+            # bag/map 問題をここで制御
+            lines.append(
+                "For this travel topic, do NOT choose ultra-basic items such as 'bag', 'map', "
+                "'bus', 'train', 'hotel', 'airport' unless there is no alternative."
+            )
+            if diff in ("B1", "B2"):
+                lines.append(
+                    "Prefer travel-related vocabulary about reservations, schedules, tickets, procedures and problems, "
+                    "for example: 'reservation', 'connection', 'immigration', 'transfer', "
+                    "'departure', 'arrival', 'overbooked', 'delayed', 'luggage claim', 'gate', 'terminal', 'layover'."
+                )
+            else:
+                lines.append(
+                    "Prefer practical travel words beyond the very basic items: focus on tickets, times, places, "
+                    "services and common problems."
+                )
+
+        if functional in _CONV_FUNCTIONALS_EN:
+            # talk/speak/share などメタ動詞を避けて、中身のある語を取る
+            lines.append(
+                "For this conversational topic, avoid generic communication verbs such as "
+                "'talk', 'speak', 'say', 'tell', 'share', 'ask', 'discuss'."
+            )
+            lines.append(
+                "Instead, choose words that represent concrete actions, states, problems, plans or feelings that "
+                "people talk ABOUT in everyday situations (for example: 'cancel', 'approve', 'complain', "
+                "'refund', 'delay', 'deadline', 'schedule', 'hesitate', 'recommend', 'motivation')."
+            )
+
+        if functional == "feelings and emotions":
+            lines.append(
+                "Include a variety of emotion words (for example: 'anxious', 'relieved', 'jealous', 'frustrated', "
+                "'overwhelmed', 'confident') rather than only 'happy', 'sad', 'good', 'bad'."
+            )
+
+        if functional == "workplace basics":
+            lines.append(
+                "Prefer workplace-related vocabulary like tasks, roles, meetings, deadlines, feedback and projects; "
+                "avoid empty words like 'thing' or overly generic 'good'."
+            )
+
+    # トレンド用の追加制約
     if is_trend:
-        lines.append("Do NOT include names of people, teams, brands, hashtags, usernames, or titles of works.")
-        lines.append("Avoid multi-word proper nouns and words that require capitalization in general use.")
-        lines.append("Prefer single tokens that can be used in everyday sentences about the topic.")
+        lines.append(
+            "This is for a general learner-friendly video about recent topics, not news headlines."
+        )
+        lines.append(
+            "Do NOT include names of people, teams, brands, hashtags, usernames, or titles of works."
+        )
+        lines.append(
+            "Avoid multi-word proper nouns and words that require capitalization in general use."
+        )
+        lines.append(
+            "Prefer single tokens that can be used in everyday sentences about the topic."
+        )
 
-    if diff in ("A1","A2","B1"):
-        lines.append(f"Target approximate CEFR level: {diff}. Keep words short and common for this level.")
+    # 最近使った語を避けるよう指示（プロンプト側）
+    if recent_used:
+        # あまり長くなりすぎないように先頭15件だけ見せる
+        preview = sorted(set(recent_used))[:15]
+        lines.append(
+            "Avoid reusing these words if possible, because they were used recently for this topic and level: "
+            + ", ".join(preview) + "."
+        )
 
+    # 共通ルール
     lines.append("Return ONLY one word or short hyphenated term per line, no numbering, no punctuation.")
     lines.append(f"All words must be written in {LANG_NAME.get(lang_code,'the target')} language.")
+    lines.append("Do not output translations, explanations, or example sentences here.")
+    lines.append("Do not output different forms of the same base word, unless they are clearly different in meaning.")
+
     prompt = "\n".join(lines)
 
     content = ""
     try:
-        rsp = GPT.chat_completions.create(  # ← 一部の環境で chat.completions にエイリアス
+        # 一部の環境で chat_completions エイリアスが必要なため、両方試す
+        rsp = GPT.chat_completions.create(
             model="gpt-4o-mini",
             messages=[{"role":"user","content":prompt}],
             temperature=LIST_TEMP, top_p=0.9,
@@ -504,29 +696,58 @@ def _gen_vocab_list_from_spec(spec: dict, lang_code: str) -> list[str]:
         except Exception:
             content = ""
 
-    words = []
+    words: list[str] = []
     for line in content.splitlines():
         w = (line or "").strip()
-        if not w: continue
+        if not w:
+            continue
+        # 先頭の番号などを削除
         w = re.sub(r"^\d+[\).]?\s*", "", w)
+        # 行末の句読点等を削除
         w = re.sub(r"[，、。.!?！？]+$", "", w)
+        # 最初のトークンだけを採用（2語以上返ってきた場合の保険）
         w = w.split()[0]
         if not w:
             continue
 
+        low = w.lower()
+
+        # トレンド用のフィルタ
         if is_trend:
             if re.search(r"[#@/0-9]", w):
                 continue
             if lang_code == "en" and len(w) >= 2 and w[0].isupper() and w[1:].islower():
+                # 先頭だけ大文字＝固有名詞っぽい → スキップ
                 continue
+
+        # 英語の“学習メタ語”は絶対いらない
+        if lang_code == "en" and low in BAN_META_EN:
+            continue
+
+        # 会話系 Functional のときだけ talk/speak 系を弾く
+        if (
+            lang_code == "en"
+            and functional in _CONV_FUNCTIONALS_EN
+            and low in BAN_TALK_EN
+        ):
+            continue
 
         if w not in words:
             words.append(w)
 
-    if len(words) >= n:
-        return words[:n]
-    fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
-    return (words + [w for w in fallback if w not in words])[:n]
+    # 足りなければ簡単なフォールバックを追加
+    if len(words) < n:
+        fallback = ["check-in", "reservation", "checkout", "receipt", "elevator", "lobby", "upgrade"]
+        for fw in fallback:
+            if fw not in words:
+                words.append(fw)
+
+    final = words[:n]
+
+    # 今回使った語を履歴に保存
+    _save_used_words(lang_code, functional or th, diff, final)
+
+    return final
 
 # ───────────────────────────────────────────────
 # ★ spec 正規化＋spec対応の語彙生成

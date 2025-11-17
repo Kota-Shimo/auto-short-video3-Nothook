@@ -131,7 +131,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo 'SUB_ROMAJI_JA=0'        # 2段目: ja-Latn を出す
+            echo 'SUB_ROMAJI_JA=1'        # 2段目: ja-Latn を出す
             echo 'SUB_JA_ONLY_ROMAJI=0'   # 日本語原文も出す（1段目）
             echo 'SUB_KANA_JA=0'          # かな字幕はオフ
             echo 'FALLBACK_SECOND_SUB=en' # 3段目が無い時は英語で補完

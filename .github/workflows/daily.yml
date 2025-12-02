@@ -1,7 +1,7 @@
 name: Auto-Vocab-Daily
 
 on:
-  #schedule:
+  schedule:
     # ───────── 毎日（All days, UTCベース）─────────
     - cron: '30 22 * * *'  # JST07:30 → 通勤前/通学前
     - cron: '15 03 * * *'  # JST12:15 → 昼休み
